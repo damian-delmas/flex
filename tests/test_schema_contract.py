@@ -111,6 +111,38 @@ class TestPKRule:
 
 
 # =============================================================================
+# Source Invariant Tests
+# =============================================================================
+
+class TestSourceInvariant:
+    """Each chunk belongs to exactly one source. No orphans, no duplicates."""
+
+    def test_no_duplicate_source_edges(self, qmem_cell):
+        """A chunk must not have multiple source edges."""
+        dupes = qmem_cell.execute("""
+            SELECT chunk_id, COUNT(*) as n FROM _edges_source
+            GROUP BY chunk_id HAVING n > 1
+        """).fetchall()
+        assert len(dupes) == 0, \
+            f"{len(dupes)} chunks have multiple sources"
+
+    def test_no_orphan_chunks(self, qmem_cell):
+        """Every chunk must have a source edge."""
+        orphans = qmem_cell.execute("""
+            SELECT c.id FROM _raw_chunks c
+            LEFT JOIN _edges_source e ON c.id = e.chunk_id
+            WHERE e.chunk_id IS NULL
+        """).fetchall()
+        assert len(orphans) == 0, \
+            f"{len(orphans)} chunks have no source edge"
+
+    def test_validate_cell_passes(self, qmem_cell):
+        """validate_cell() should pass on a well-formed cell."""
+        from flexsearch.core import validate_cell
+        validate_cell(qmem_cell)  # should not raise
+
+
+# =============================================================================
 # Two Lifecycles Tests
 # =============================================================================
 

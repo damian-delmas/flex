@@ -137,9 +137,14 @@ def _read_view_levels(db: sqlite3.Connection) -> dict[str, str]:
     return levels
 
 
-def _col_select(alias: str, col_name: str, renames: dict) -> str:
-    """Build SELECT column with optional AS rename."""
+def _col_select(alias: str, col_name: str, renames: dict,
+                seen: set = None) -> Optional[str]:
+    """Build SELECT column with optional AS rename. Returns None if duplicate."""
     domain = renames.get(col_name, col_name)
+    if seen is not None:
+        if domain in seen:
+            return None  # skip duplicate column name
+        seen.add(domain)
     if domain == col_name:
         return f"{alias}.[{col_name}]"
     return f"{alias}.[{col_name}] AS [{domain}]"
@@ -166,11 +171,14 @@ def _build_chunk_view(view_name: str, db: sqlite3.Connection,
 
     selects = []
     joins = []
+    seen = set()  # track emitted column names to skip duplicates
 
     # 1. Base: _raw_chunks
     for c in base_cols['_raw_chunks']:
         if c[1] not in _SKIP_COLS:
-            selects.append(_col_select('r', c[1], renames))
+            s = _col_select('r', c[1], renames, seen)
+            if s:
+                selects.append(s)
 
     # 2. Bridge: _edges_source (if exists)
     has_bridge = '_edges_source' in base_cols
@@ -181,7 +189,9 @@ def _build_chunk_view(view_name: str, db: sqlite3.Connection,
             if col == 'chunk_id':
                 continue  # already the join key
             if col not in _SKIP_COLS:
-                selects.append(_col_select('s', col, renames))
+                s = _col_select('s', col, renames, seen)
+                if s:
+                    selects.append(s)
 
     # 3. _raw_sources (through bridge, if both exist)
     has_sources = has_bridge and '_raw_sources' in base_cols
@@ -194,7 +204,9 @@ def _build_chunk_view(view_name: str, db: sqlite3.Connection,
             if col == 'source_id':
                 continue  # already included from bridge
             if col not in _SKIP_COLS:
-                selects.append(_col_select('src', col, renames))
+                s = _col_select('src', col, renames, seen)
+                if s:
+                    selects.append(s)
 
     # 4. All discovered tables with PK on chunk_id or source_id
     alias_idx = 0
@@ -212,9 +224,9 @@ def _build_chunk_view(view_name: str, db: sqlite3.Connection,
             )
             for col in table['columns']:
                 if col['name'] not in _FK_COLS and col['name'] not in _SKIP_COLS:
-                    selects.append(
-                        _col_select(alias, col['name'], renames)
-                    )
+                    s = _col_select(alias, col['name'], renames, seen)
+                    if s:
+                        selects.append(s)
 
         elif table['has_source_id_pk'] and has_bridge:
             # Source-level table, join through bridge
@@ -226,9 +238,9 @@ def _build_chunk_view(view_name: str, db: sqlite3.Connection,
             )
             for col in table['columns']:
                 if col['name'] not in _FK_COLS and col['name'] not in _SKIP_COLS:
-                    selects.append(
-                        _col_select(alias, col['name'], renames)
-                    )
+                    s = _col_select(alias, col['name'], renames, seen)
+                    if s:
+                        selects.append(s)
 
     select_str = ",\n    ".join(selects)
     join_str = "\n".join(joins)
@@ -255,17 +267,21 @@ def _build_source_view(view_name: str, db: sqlite3.Connection,
 
     selects = []
     joins = []
+    seen = set()  # track emitted column names to skip duplicates
 
     # 1. Base: _raw_sources
     for c in base_cols['_raw_sources']:
         if c[1] not in _SKIP_COLS:
-            selects.append(_col_select('src', c[1], renames))
+            s = _col_select('src', c[1], renames, seen)
+            if s:
+                selects.append(s)
 
     # 2. _edges_source for chunk count
     has_bridge = '_edges_source' in base_cols
     if has_bridge:
         joins.append("JOIN _edges_source s ON src.source_id = s.source_id")
         selects.append("COUNT(DISTINCT s.chunk_id) as chunk_count")
+        seen.add('chunk_count')
 
     # 3. Source-level enrichment tables (source_id PK)
     alias_idx = 0
@@ -281,9 +297,9 @@ def _build_source_view(view_name: str, db: sqlite3.Connection,
             )
             for col in table['columns']:
                 if col['name'] not in _FK_COLS and col['name'] not in _SKIP_COLS:
-                    selects.append(
-                        _col_select(alias, col['name'], renames)
-                    )
+                    s = _col_select(alias, col['name'], renames, seen)
+                    if s:
+                        selects.append(s)
 
     select_str = ",\n    ".join(selects)
     join_str = "\n".join(joins)

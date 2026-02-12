@@ -57,3 +57,32 @@ def set_meta(db: sqlite3.Connection, key: str, value: str):
         (key, value)
     )
     db.commit()
+
+
+def validate_cell(db: sqlite3.Connection):
+    """Post-COMPILE sanity checks. Call after population, before embed.
+
+    Catches invariant violations at ingest time, not when a view query
+    returns wrong counts 3 months later.
+    """
+    errors = []
+
+    # Source edge 1:1 invariant — each chunk belongs to exactly one source
+    dupes = db.execute("""
+        SELECT chunk_id, COUNT(*) as n FROM _edges_source
+        GROUP BY chunk_id HAVING n > 1
+    """).fetchall()
+    if dupes:
+        errors.append(f"{len(dupes)} chunks have multiple sources")
+
+    # Every chunk should have a source edge
+    orphans = db.execute("""
+        SELECT c.id FROM _raw_chunks c
+        LEFT JOIN _edges_source e ON c.id = e.chunk_id
+        WHERE e.chunk_id IS NULL
+    """).fetchall()
+    if orphans:
+        errors.append(f"{len(orphans)} chunks have no source edge")
+
+    if errors:
+        raise ValueError("Cell validation failed: " + "; ".join(errors))
