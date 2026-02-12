@@ -1,13 +1,17 @@
 """
-TDD Tests for flexsearch/compile/docpac.py — Plan 1
+Tests for flexsearch/compile/docpac.py
 
 Tests parse_docpac(): walk a doc-pac directory, map folders to semantic metadata.
 
 Contract:
-  parse_docpac(root, facet=None, pattern='**/*.md') -> list[DocPacEntry]
-  DocPacEntry: path, temporal, doc_type, facet, skip
+  parse_docpac(root, pattern='**/*.md') -> list[DocPacEntry]
+  DocPacEntry: path, temporal, doc_type, title, file_date, skip
 
-These tests WILL FAIL until Plan 1 code is written.
+Key principles tested:
+  - Temporal identity is relative (frame resets at doc-pac boundaries)
+  - Any dir with indicator folders (changes/, current/, intended/) is a boundary
+  - file_date (calendar) and temporal (semantic) are separate dimensions
+  - Facets are NOT auto-detected (domain concept, assigned by init script)
 
 Run with: pytest tests/test_docpac.py -v
 """
@@ -37,7 +41,7 @@ pytestmark = pytest.mark.skipif(
 def docpac_tree(tmp_path):
     """Create a realistic doc-pac folder structure with .md files."""
     root = tmp_path / "context"
-    # changes/code — past, changelog (no YYMMDD prefix to avoid temporal override)
+    # changes/code — past, changelog
     (root / "changes" / "code").mkdir(parents=True)
     (root / "changes" / "code" / "refactor-log.md").write_text("# Refactor log")
 
@@ -75,19 +79,28 @@ def docpac_tree(tmp_path):
 
 @pytest.fixture
 def nested_docpac(tmp_path):
-    """Doc-pac with a recursive plan inside intended/proximate/."""
+    """Doc-pac with nested doc-pacs under intended/proximate/ and plans/."""
     root = tmp_path / "context"
 
-    # Top-level current
+    # Top-level current (makes root a doc-pac)
     (root / "current").mkdir(parents=True)
     (root / "current" / "arch.md").write_text("# Top arch")
 
-    # Nested plan: intended/proximate/sql-first/ IS a doc-pac
-    plan = root / "intended" / "proximate" / "sql-first"
+    # Nested under intended/proximate/sql-first/ — IS a doc-pac
+    feature = root / "intended" / "proximate" / "sql-first"
+    (feature / "changes" / "code").mkdir(parents=True)
+    (feature / "changes" / "code" / "sql-change.md").write_text("# SQL change")
+    (feature / "current").mkdir(parents=True)
+    (feature / "current" / "status.md").write_text("# SQL status")
+
+    # Nested under plans/plan-a/ — also a doc-pac
+    plan = root / "plans" / "plan-a"
     (plan / "changes" / "code").mkdir(parents=True)
-    (plan / "changes" / "code" / "sql-change.md").write_text("# SQL change")
+    (plan / "changes" / "code" / "impl-log.md").write_text("# Implementation log")
     (plan / "current").mkdir(parents=True)
-    (plan / "current" / "status.md").write_text("# SQL status")
+    (plan / "current" / "progress.md").write_text("# Progress")
+    (plan / "intended").mkdir(parents=True)
+    (plan / "intended" / "next-steps.md").write_text("# Next")
 
     return root
 
@@ -171,77 +184,114 @@ class TestSkipFolders:
 
 
 # =============================================================================
-# Recursion Tests
+# Frame Boundary Tests — the core fix
 # =============================================================================
 
-class TestRecursion:
-    """Nested plans in intended/proximate/{name}/ recurse with facet={name}."""
+class TestFrameBoundary:
+    """Temporal resolution resets at doc-pac boundaries.
+    Any dir with indicator folders is a boundary.
+    Inner changes/code/ is past even under intended/proximate/."""
 
-    def test_nested_plan_gets_facet(self, nested_docpac):
-        from flexsearch.compile.docpac import parse_docpac
-        entries = parse_docpac(str(nested_docpac))
-        sql_entries = [e for e in entries if 'sql-first' in e.path]
-        assert len(sql_entries) >= 2
-        for e in sql_entries:
-            assert e.facet == 'sql-first', f"Nested plan entry should have facet='sql-first', got '{e.facet}'"
-
-    def test_nested_changelog_doc_type(self, nested_docpac):
-        """Nested changes/code gets correct facet.
-        NOTE: temporal resolves to 'future' because 'intended/proximate' (18 chars)
-        matches before 'changes/code' (12 chars) in the specificity sort.
-        This is a known limitation — _infer_from_path does substring matching
-        on the full relative path, so outer folder structure leaks through.
-        """
+    def test_nested_changelog_is_past(self, nested_docpac):
+        """The whole point: changes/code inside a nested doc-pac is PAST,
+        not future. Frame resets at the boundary."""
         from flexsearch.compile.docpac import parse_docpac
         entries = parse_docpac(str(nested_docpac))
         nested_code = [e for e in entries if 'sql-first/changes/code' in e.path]
         assert len(nested_code) == 1
-        assert nested_code[0].facet == 'sql-first'
+        assert nested_code[0].temporal == 'past'
+        assert nested_code[0].doc_type == 'changelog'
 
-    def test_top_level_gets_root_facet(self, nested_docpac):
-        """Top-level entries get the root dir name as facet (default)."""
+    def test_nested_current_is_present(self, nested_docpac):
+        """current/ inside a nested doc-pac is PRESENT, not future."""
         from flexsearch.compile.docpac import parse_docpac
         entries = parse_docpac(str(nested_docpac))
-        top_entries = [e for e in entries if '/current/arch.md' in e.path]
-        assert len(top_entries) == 1
-        # facet defaults to root.name, not None
-        assert top_entries[0].facet == nested_docpac.name
+        nested_current = [e for e in entries if 'sql-first/current' in e.path]
+        assert len(nested_current) == 1
+        assert nested_current[0].temporal == 'present'
 
-    def test_explicit_facet_overrides_default(self, nested_docpac):
-        """Passing facet= overrides the root.name default."""
+    def test_plans_changelog_is_past(self, nested_docpac):
+        """plans/plan-a/ is also a doc-pac boundary. Its changes/code/ is past."""
         from flexsearch.compile.docpac import parse_docpac
-        entries = parse_docpac(str(nested_docpac), facet='myproject')
-        top_entries = [e for e in entries if '/current/arch.md' in e.path]
-        assert top_entries[0].facet == 'myproject'
+        entries = parse_docpac(str(nested_docpac))
+        plan_code = [e for e in entries if 'plan-a/changes/code' in e.path]
+        assert len(plan_code) == 1
+        assert plan_code[0].temporal == 'past'
+        assert plan_code[0].doc_type == 'changelog'
+
+    def test_plans_intended_is_future(self, nested_docpac):
+        """plans/plan-a/intended/ resolves to future relative to plan-a boundary."""
+        from flexsearch.compile.docpac import parse_docpac
+        entries = parse_docpac(str(nested_docpac))
+        plan_intended = [e for e in entries if 'plan-a/intended' in e.path]
+        assert len(plan_intended) == 1
+        assert plan_intended[0].temporal == 'future'
+
+    def test_top_level_unaffected(self, nested_docpac):
+        """Top-level current/ still resolves to present at root boundary."""
+        from flexsearch.compile.docpac import parse_docpac
+        entries = parse_docpac(str(nested_docpac))
+        top = [e for e in entries if e.path.endswith('/current/arch.md')]
+        assert len(top) == 1
+        assert top[0].temporal == 'present'
 
 
 # =============================================================================
-# Edge Cases
+# Facet — NOT auto-detected
 # =============================================================================
 
-class TestTemporalOverride:
-    """Filenames starting with YYMMDD override folder-based temporal."""
+class TestFacetRemoved:
+    """Facets are domain concepts assigned by init scripts, not docpac."""
 
-    def test_yymmdd_filename_overrides_folder_temporal(self, tmp_path):
+    def test_entries_have_no_facet_attribute(self, nested_docpac):
+        from flexsearch.compile.docpac import parse_docpac
+        entries = parse_docpac(str(nested_docpac))
+        assert len(entries) > 0
+        assert not hasattr(entries[0], 'facet'), \
+            "DocPacEntry should not have facet — facets are assigned by init scripts"
+
+
+# =============================================================================
+# file_date — Calendar Time (Separate from Semantic Temporal)
+# =============================================================================
+
+class TestFileDate:
+    """file_date carries calendar time from filename.
+    temporal carries semantic time from folder.
+    They never conflate."""
+
+    def test_yymmdd_extracted_to_file_date(self, tmp_path):
         from flexsearch.compile.docpac import parse_docpac
         root = tmp_path / "ctx"
         (root / "changes" / "code").mkdir(parents=True)
         (root / "changes" / "code" / "260211-refactor.md").write_text("# Log")
         entries = parse_docpac(str(root))
         code = [e for e in entries if 'changes/code' in e.path]
-        assert len(code) == 1
-        assert code[0].temporal == '260211'  # filename override
-        assert code[0].doc_type == 'changelog'  # folder still sets doc_type
+        assert code[0].file_date == '260211'
+        assert code[0].temporal == 'past'  # semantic, not overridden
 
-    def test_no_prefix_uses_folder_temporal(self, tmp_path):
+    def test_yymmdd_hhmm_extracted(self, tmp_path):
         from flexsearch.compile.docpac import parse_docpac
         root = tmp_path / "ctx"
         (root / "changes" / "code").mkdir(parents=True)
-        (root / "changes" / "code" / "refactor.md").write_text("# Log")
+        (root / "changes" / "code" / "260211-1538_sql-refactor.md").write_text("# Log")
         entries = parse_docpac(str(root))
         code = [e for e in entries if 'changes/code' in e.path]
-        assert code[0].temporal == 'past'  # folder-based
+        assert code[0].file_date == '260211-1538'
+        assert code[0].temporal == 'past'
 
+    def test_no_date_prefix_is_none(self, tmp_path):
+        from flexsearch.compile.docpac import parse_docpac
+        root = tmp_path / "ctx"
+        (root / "current").mkdir(parents=True)
+        (root / "current" / "architecture.md").write_text("# Arch")
+        entries = parse_docpac(str(root))
+        assert entries[0].file_date is None
+
+
+# =============================================================================
+# Edge Cases
+# =============================================================================
 
 class TestEdgeCases:
     """Edge cases and return format."""
@@ -267,6 +317,5 @@ class TestEdgeCases:
 
     def test_custom_pattern(self, docpac_tree):
         from flexsearch.compile.docpac import parse_docpac
-        # Only .md files by default, but allow override
         entries_md = parse_docpac(str(docpac_tree), pattern='**/*.md')
         assert len(entries_md) > 0

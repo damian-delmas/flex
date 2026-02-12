@@ -1,30 +1,37 @@
 """
 Doc-pac folder structure parser.
 
-Walks a directory, maps folders to (path, temporal, doc_type, facet) entries.
-Detects recursive plans (intended/proximate/{name}/ IS a doc-pac) and recurses.
+Walks a directory, maps folders to (path, temporal, doc_type) entries.
+Any directory containing doc-pac indicator folders (changes/, current/, intended/)
+is a boundary — temporal resolution resets at each boundary.
 Returns flat list of indexable entries.
-
-Replaces every hardcoded CANONICAL_PATHS in cell init scripts.
 
 Temporal dimensions: past (fact), present (current truth),
 future (speculation), exogenous (external knowledge).
+
+The temporal field carries semantic time (past/present/future/exogenous).
+The file_date field carries calendar time (YYMMDD or YYMMDD-HHMM).
+These are different dimensions and never conflated.
+
+Facets are NOT auto-detected. Facets are domain concepts (subsystems like
+'supabase', 'appsscript') that emerge from human conversation during
+pipeline creation. The init script assigns facets, not docpac.
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 
 @dataclass
 class DocPacEntry:
-    path: str           # absolute file path
-    temporal: str       # past | present | future | exogenous | None
-    doc_type: str       # changelog | architecture | design | plan | etc
-    facet: Optional[str]  # subsystem or plan name (None = cross-cutting)
-    title: str          # human-readable title from filename
-    skip: bool = False  # True for buffer/, _raw/, _qmem/, cache/
+    path: str                   # absolute file path
+    temporal: Optional[str]     # past | present | future | exogenous | None
+    doc_type: Optional[str]     # changelog | architecture | design | plan | etc
+    title: str                  # human-readable title from filename
+    file_date: Optional[str] = None  # YYMMDD or YYMMDD-HHMM from filename
+    skip: bool = False          # True for buffer/, _raw/, _qmem/, cache/
 
 
 # Folder path → (temporal, doc_type) mapping
@@ -39,6 +46,7 @@ FOLDER_MAP = {
     'changes/review':   ('past',      'review'),
     'changes/design':   ('future',    'design'),     # NOTE: future, not past
     'changes/session':  ('past',      'session'),
+    'current/ast':      ('present',   'ast'),
     'current':          ('present',   'architecture'),
     'intended/proximate': ('future',  'plan'),
     'intended/ultimate':  ('future',  'vision'),
@@ -61,26 +69,30 @@ DOCPAC_INDICATORS = {'changes', 'current', 'intended'}
 # Temporal pattern: YYMMDD or YYMMDD-HHMM
 TEMPORAL_RE = re.compile(r'^(\d{6})(?:-(\d{4}))?')
 
+# Pre-sorted for specificity (longest key first)
+_SORTED_KEYS = sorted(FOLDER_MAP.keys(), key=lambda k: -len(k))
 
-def parse_docpac(root, facet: str = None,
-                 pattern: str = '**/*.md') -> list[DocPacEntry]:
+
+def parse_docpac(root, pattern: str = '**/*.md') -> list[DocPacEntry]:
     """
     Walk a doc-pac directory, return flat list of indexable entries.
 
-    Recursion rule: If intended/proximate/{name}/ contains doc-pac
-    indicator folders (changes/, current/, intended/), recurse with
-    facet={name}.
+    Any directory containing indicator folders (changes/, current/, intended/)
+    is a doc-pac boundary. Temporal resolution happens relative to the
+    innermost boundary, not the top-level root. Frame resets at boundaries.
+
+    Facets are NOT assigned here. Facets are domain concepts (subsystems)
+    that emerge from human-AI conversation during pipeline creation.
+    The init script assigns facets to chunks, not docpac.
 
     Args:
         root: Root directory of the doc-pac
-        facet: Facet name. Defaults to root dir name.
         pattern: Glob pattern for files
 
     Returns:
         List of DocPacEntry
     """
     root = Path(root)
-    facet = facet or root.name
 
     if not root.exists():
         return []
@@ -97,24 +109,26 @@ def parse_docpac(root, facet: str = None,
                 path=str(filepath),
                 temporal=None,
                 doc_type='skip',
-                facet=facet,
                 title=_extract_title(filepath.name),
                 skip=True,
             ))
             continue
 
-        # Detect nested doc-pac facet
-        entry_facet = _detect_nested_facet(filepath, root, facet)
+        # Find innermost doc-pac boundary
+        boundary = _find_boundary(filepath, root)
 
-        # Infer temporal + doc_type from folder path
-        temporal, doc_type = _infer_from_path(filepath, root)
+        # Infer temporal + doc_type relative to boundary
+        temporal, doc_type = _infer_from_path(filepath, boundary)
+
+        # Calendar date from filename (separate from semantic temporal)
+        file_date = _extract_file_date(filepath.name)
 
         entries.append(DocPacEntry(
             path=str(filepath),
             temporal=temporal,
             doc_type=doc_type,
-            facet=entry_facet,
             title=_extract_title(filepath.name),
+            file_date=file_date,
         ))
 
     return entries
@@ -129,45 +143,54 @@ def _in_skip_folder(filepath: Path, root: Path) -> bool:
     return any(part in SKIP_FOLDERS for part in relative.parts)
 
 
-def _detect_nested_facet(filepath: Path, root: Path,
-                         default_facet: str) -> str:
+def _find_boundary(filepath: Path, root: Path) -> Path:
     """
-    Detect if file is inside a nested doc-pac under intended/proximate/{name}/.
+    Walk from file toward root, find the innermost doc-pac boundary.
 
-    If {name}/ contains doc-pac indicator folders, use {name} as facet.
+    A boundary is any directory that contains doc-pac indicator folders
+    (changes/, current/, intended/). The innermost one wins.
+
+    Returns:
+        boundary_path
     """
-    try:
-        relative = filepath.relative_to(root)
-    except ValueError:
-        return default_facet
+    # Walk parent directories from file toward root
+    # Start from file's parent, stop before root
+    current = filepath.parent
+    innermost = root
 
-    parts = relative.parts
-    # Look for intended/proximate/{name}/... pattern
-    for i in range(len(parts) - 1):
-        if parts[i] == 'proximate' and i > 0 and parts[i - 1] == 'intended':
-            if i + 1 < len(parts):
-                candidate_name = parts[i + 1]
-                candidate_dir = root / '/'.join(parts[:i + 2])
-                if candidate_dir.is_dir() and _is_docpac(candidate_dir):
-                    return candidate_name
+    # Collect all ancestors between file and root (exclusive of root)
+    ancestors = []
+    while current != root and current != current.parent:
+        ancestors.append(current)
+        current = current.parent
 
-    return default_facet
+    # Check innermost first (closest to file)
+    for ancestor in ancestors:
+        if _is_docpac(ancestor):
+            innermost = ancestor
+            break  # innermost wins
+
+    return innermost
 
 
 def _is_docpac(directory: Path) -> bool:
     """Check if a directory looks like a doc-pac (has indicator folders)."""
-    children = {p.name for p in directory.iterdir() if p.is_dir()}
+    try:
+        children = {p.name for p in directory.iterdir() if p.is_dir()}
+    except PermissionError:
+        return False
     return bool(children & DOCPAC_INDICATORS)
 
 
-def _infer_from_path(filepath: Path, root: Path) -> tuple[Optional[str], Optional[str]]:
+def _infer_from_path(filepath: Path, boundary: Path) -> tuple[Optional[str], Optional[str]]:
     """
-    Infer (temporal, doc_type) from folder path.
+    Infer (temporal, doc_type) from folder path relative to boundary.
 
-    Uses specificity rule: longest matching path wins.
+    Uses specificity rule: longest matching key wins.
+    Resolution is relative to the boundary, not the top-level root.
     """
     try:
-        relative = filepath.relative_to(root)
+        relative = filepath.relative_to(boundary)
     except ValueError:
         return None, None
 
@@ -176,21 +199,17 @@ def _infer_from_path(filepath: Path, root: Path) -> tuple[Optional[str], Optiona
     if not folder_parts:
         return None, None
 
-    # Try progressively shorter folder paths (longest match wins)
-    # Sort FOLDER_MAP keys by length descending for specificity
-    sorted_keys = sorted(FOLDER_MAP.keys(), key=lambda k: -len(k))
-
     folder_path = '/'.join(folder_parts).lower()
 
-    for key in sorted_keys:
+    for key in _SORTED_KEYS:
         if key in folder_path:
             return FOLDER_MAP[key]
 
     return None, None
 
 
-def _extract_temporal(filename: str) -> Optional[str]:
-    """Extract YYMMDD or YYMMDD-HHMM from filename."""
+def _extract_file_date(filename: str) -> Optional[str]:
+    """Extract YYMMDD or YYMMDD-HHMM from filename. Calendar time, not semantic temporal."""
     match = TEMPORAL_RE.match(filename)
     if match:
         date = match.group(1)

@@ -69,7 +69,7 @@ class TestPKRule:
        Tables without PK on chunk_id are 1:N (query directly)."""
 
     # Tables that MUST have PK on chunk_id (1:1, in view)
-    MUST_HAVE_PK = ['_types_document', '_enrich_types']
+    MUST_HAVE_PK = ['_types_docpac', '_enrich_types']
     THREAD_MUST_HAVE_PK = ['_edges_tool_ops', '_types_message']
 
     # Tables that MUST NOT have PK on chunk_id (1:N, not in view)
@@ -138,7 +138,7 @@ class TestTwoLifecycles:
 
     def test_enrich_wipe_preserves_types(self, qmem_cell):
         """Wiping _enrich_* must not affect _types_* counts."""
-        types_before = qmem_cell.execute("SELECT COUNT(*) FROM _types_document").fetchone()[0]
+        types_before = qmem_cell.execute("SELECT COUNT(*) FROM _types_docpac").fetchone()[0]
 
         tables = qmem_cell.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '_enrich_%'"
@@ -146,7 +146,7 @@ class TestTwoLifecycles:
         for (table,) in tables:
             qmem_cell.execute(f"DELETE FROM {table}")
 
-        types_after = qmem_cell.execute("SELECT COUNT(*) FROM _types_document").fetchone()[0]
+        types_after = qmem_cell.execute("SELECT COUNT(*) FROM _types_docpac").fetchone()[0]
         assert types_before == types_after
 
     def test_enrich_wipe_preserves_edges(self, qmem_cell):
@@ -267,19 +267,35 @@ class TestMeta:
         assert schema is not None
         assert schema[0] in ('chunk-atom', 'flat-tables')
 
-    def test_view_renames_convention(self, thread_cell):
-        """View rename keys follow pattern: view:{name}:rename:{raw_col}."""
-        renames = thread_cell.execute(
+    def test_view_meta_convention(self, thread_cell):
+        """View meta keys follow patterns:
+           - view:{name}:rename:{raw_col} (4 parts, domain vocabulary)
+           - view:{name}:level (3 parts, chunk|source)
+        """
+        view_keys = thread_cell.execute(
             "SELECT key, value FROM _meta WHERE key LIKE 'view:%'"
         ).fetchall()
-        assert len(renames) > 0, "Thread cell should have view renames"
-        for key, value in renames:
+        assert len(view_keys) > 0, "Thread cell should have view meta keys"
+
+        has_rename = False
+        has_level = False
+        for key, value in view_keys:
             parts = key.split(':')
-            assert len(parts) == 4, f"Rename key '{key}' should have 4 parts"
             assert parts[0] == 'view'
-            assert parts[2] == 'rename'
-            assert len(parts[3]) > 0, "Raw column name must not be empty"
-            assert len(value) > 0, "Domain name must not be empty"
+            assert len(value) > 0, f"Value for '{key}' must not be empty"
+
+            if len(parts) == 4 and parts[2] == 'rename':
+                has_rename = True
+                assert len(parts[3]) > 0, "Raw column name must not be empty"
+            elif len(parts) == 3 and parts[2] == 'level':
+                has_level = True
+                assert value in ('chunk', 'source'), \
+                    f"Level for '{key}' must be 'chunk' or 'source', got '{value}'"
+            else:
+                raise AssertionError(
+                    f"Unknown view meta key pattern: '{key}' "
+                    f"(expected 4-part rename or 3-part level)"
+                )
 
 
 # =============================================================================

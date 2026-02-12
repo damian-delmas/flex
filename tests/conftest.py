@@ -48,11 +48,14 @@ CREATE TABLE _edges_source (
 CREATE INDEX idx_es_chunk ON _edges_source(chunk_id);
 CREATE INDEX idx_es_source ON _edges_source(source_id);
 
--- TYPES LAYER (immutable COMPILE classification)
-CREATE TABLE _types_document (
+-- TYPES LAYER (immutable COMPILE classification — pipeline signature)
+-- Doc-pac pipeline: _types_docpac. Thread pipeline: _types_message.
+CREATE TABLE _types_docpac (
     chunk_id TEXT PRIMARY KEY,
     temporal TEXT,
     doc_type TEXT,
+    facet TEXT,
+    section_title TEXT,
     yaml_type TEXT,
     yaml_status TEXT
 );
@@ -203,6 +206,12 @@ def qmem_cell():
     conn.execute("INSERT INTO _meta VALUES ('description', 'Test cell for schema validation. Small doc corpus.')")
     conn.execute("INSERT INTO _meta VALUES ('version', '2.0.0')")
     conn.execute("INSERT INTO _meta VALUES ('schema', 'chunk-atom')")
+    # View levels (required by view generator)
+    conn.execute("INSERT INTO _meta VALUES ('view:sections:level', 'chunk')")
+    conn.execute("INSERT INTO _meta VALUES ('view:documents:level', 'source')")
+    # Domain renames only — graph terms stay exact
+    conn.execute("INSERT INTO _meta VALUES ('view:sections:rename:source_id', 'doc_id')")
+    conn.execute("INSERT INTO _meta VALUES ('view:sections:rename:title', 'doc_title')")
 
     # 3 sources, 9 chunks (3 per source)
     sources = [
@@ -229,7 +238,7 @@ def qmem_cell():
                 (cid, sid, 'markdown', i)
             )
             conn.execute(
-                "INSERT INTO _types_document (chunk_id, temporal, doc_type) VALUES (?,?,?)",
+                "INSERT INTO _types_docpac (chunk_id, temporal, doc_type) VALUES (?,?,?)",
                 (cid, temporal, dtype)
             )
             chunk_id += 1
@@ -257,12 +266,11 @@ def thread_cell():
         ('description', 'Session provenance for Claude Code. Test fixture.'),
         ('version', '2.0.0'),
         ('schema', 'chunk-atom'),
+        # Domain renames only — graph terms (centrality, community_id, is_hub) stay exact
         ('view:messages:rename:tool_name', 'action'),
-        ('view:messages:rename:centrality', 'importance'),
-        ('view:messages:rename:community_id', 'cluster'),
         ('view:messages:rename:semantic_role', 'kind'),
-        ('view:sessions:rename:centrality', 'importance'),
-        ('view:sessions:rename:community_id', 'cluster'),
+        ('view:messages:level', 'chunk'),
+        ('view:sessions:level', 'source'),
     ]
     conn.executemany("INSERT INTO _meta VALUES (?,?)", meta)
 
