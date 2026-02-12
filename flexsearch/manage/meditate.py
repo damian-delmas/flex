@@ -21,7 +21,8 @@ from typing import Optional
 
 def build_similarity_graph(db: sqlite3.Connection, table: str = '_raw_sources',
                            id_col: str = 'id', embedding_col: str = 'embedding',
-                           threshold: float = 0.5, top_k: int = None):
+                           threshold: float = 0.5, top_k: int = None,
+                           where: str = None):
     """
     Build similarity graph from embeddings via matrix multiply.
 
@@ -32,6 +33,9 @@ def build_similarity_graph(db: sqlite3.Connection, table: str = '_raw_sources',
         embedding_col: Column with embedding blobs
         threshold: Minimum cosine similarity for edge creation
         top_k: If set, keep only top K neighbors per node
+        where: Optional SQL WHERE fragment to filter rows (e.g.
+               "source_id IN (SELECT source_id FROM _edges_source
+               GROUP BY source_id HAVING COUNT(*) >= 20)")
 
     Returns:
         (NetworkX graph, edge_count) or (None, 0)
@@ -39,10 +43,13 @@ def build_similarity_graph(db: sqlite3.Connection, table: str = '_raw_sources',
     import networkx as nx
 
     # Load embeddings
-    rows = db.execute(
+    query = (
         f"SELECT [{id_col}], [{embedding_col}] FROM [{table}] "
         f"WHERE [{embedding_col}] IS NOT NULL"
-    ).fetchall()
+    )
+    if where:
+        query += f" AND ({where})"
+    rows = db.execute(query).fetchall()
 
     if not rows:
         return None, 0
