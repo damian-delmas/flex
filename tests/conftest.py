@@ -81,6 +81,13 @@ CREATE TABLE _meta (
     value TEXT
 );
 
+-- PRESETS (SQL skills — discoverable via SELECT name, description FROM _presets)
+CREATE TABLE _presets (
+    name TEXT PRIMARY KEY,
+    description TEXT,
+    sql TEXT
+);
+
 -- FTS (content-synced)
 CREATE VIRTUAL TABLE chunks_fts USING fts5(
     content,
@@ -247,6 +254,17 @@ def qmem_cell():
     conn.execute("INSERT INTO _enrich_source_graph VALUES ('src-arch', 0.85, 1, 0, 1)")
     conn.execute("INSERT INTO _enrich_source_graph VALUES ('src-log1', 0.30, 0, 0, 1)")
     conn.execute("INSERT INTO _enrich_source_graph VALUES ('src-plan', 0.45, 0, 1, 2)")
+
+    # Presets
+    conn.execute("INSERT INTO _presets VALUES (?, ?, ?)", (
+        'hub-sources', 'Find high-centrality sources',
+        "-- @name: hub-sources\n-- @param: min_centrality\nSELECT source_id, centrality\nFROM _enrich_source_graph\nWHERE centrality >= :min_centrality\nORDER BY centrality DESC"))
+    conn.execute("INSERT INTO _presets VALUES (?, ?, ?)", (
+        'overview', 'Cell overview counts and sources',
+        "-- @name: overview\n-- @multi: true\n\n-- @query: counts\nSELECT COUNT(*) as n FROM _raw_chunks;\n\n-- @query: sources\nSELECT source_id, doc_type FROM _raw_sources ORDER BY file_date DESC;"))
+    conn.execute("INSERT INTO _presets VALUES (?, ?, ?)", (
+        'all-chunks', 'All chunks ordered by time',
+        "SELECT id, content, timestamp FROM _raw_chunks ORDER BY timestamp"))
 
     conn.commit()
     yield conn

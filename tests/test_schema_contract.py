@@ -18,7 +18,7 @@ import struct
 class TestPrefixRule:
     """Table prefix declares lifecycle and mutability."""
 
-    VALID_PREFIXES = ('_raw_', '_edges_', '_types_', '_enrich_', '_meta')
+    VALID_PREFIXES = ('_raw_', '_edges_', '_types_', '_enrich_', '_meta', '_presets')
     SYSTEM_TABLES = ('chunks_fts', 'chunks_fts_data', 'chunks_fts_idx',
                      'chunks_fts_content', 'chunks_fts_docsize', 'chunks_fts_config')
 
@@ -461,7 +461,7 @@ class TestSelfDescription:
             "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'chunks_fts%'"
         ).fetchall()
         for (name,) in tables:
-            if name == '_meta':
+            if name in ('_meta', '_presets'):
                 continue
             if name.startswith('_raw_'):
                 pass  # immutable fact

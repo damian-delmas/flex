@@ -257,3 +257,46 @@ class VectorCache:
 
     def __repr__(self):
         return f"VectorCache({self.size} vectors, {self.dims}d, {self.memory_mb:.1f}MB)"
+
+
+def register_vec_search(conn, caches: dict, embed_fn):
+    """Register vec_search as a SQL-callable function.
+
+    Multi-cache registry: one VectorCache per table.
+
+    Args:
+        conn: SQLite connection
+        caches: {table_name: VectorCache} e.g. {'_raw_chunks': cache1, '_raw_sources': cache2}
+        embed_fn: callable(text) -> np.ndarray (384d)
+
+    SQL usage:
+        SELECT j.value->>'$.id' as id, CAST(j.value->>'$.score' AS REAL) as score
+        FROM json_each(vec_search('_raw_chunks', 'authentication')) j;
+
+        -- With contrastive:
+        SELECT * FROM json_each(vec_search('_raw_chunks', 'caching', 'NOT kubernetes'));
+
+        -- With diversity:
+        SELECT * FROM json_each(vec_search('_raw_chunks', 'auth', NULL, 1));
+    """
+    import json
+
+    def vec_search_fn(table, query_text, unlike=None, diverse=0, limit=200):
+        cache = caches.get(table)
+        if cache is None or cache.matrix is None:
+            return json.dumps([])
+        query_vec = np.squeeze(embed_fn(query_text))
+        not_like_vec = np.squeeze(embed_fn(unlike)) if unlike else None
+        results = cache.search(
+            query_vec,
+            not_like_vec=not_like_vec,
+            diverse=bool(diverse),
+            limit=limit,
+            oversample=min(limit * 3, cache.size),
+        )
+        return json.dumps([
+            {'id': r['id'], 'score': round(r['score'], 4)}
+            for r in results
+        ])
+
+    conn.create_function("vec_search", -1, vec_search_fn)

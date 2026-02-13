@@ -1,14 +1,16 @@
 """
-Flexsearch Presets — named SQL queries.
+Flexsearch Presets — SQL skills stored in the cell.
 
-Read .sql files with annotations, interpolate :named_params, execute.
+Presets live in the _presets table (name, description, sql).
+The sql column contains annotated SQL text with @multi, @query, @params.
+Parse logic extracts structure from annotations — same format as .sql files.
 
-Annotations:
-    -- @name: introspect
-    -- @description: Full cell orientation
-    -- @multi: true
-    -- @query: shape
-    SELECT COUNT(*) FROM _raw_chunks;
+Discovery:
+    SELECT name, description FROM _presets;
+
+Execution:
+    PresetLoader(db).execute(db, 'introspect')
+    PresetLoader(db).execute(db, 'sessions', {'limit': 5})
 """
 
 import re
@@ -18,38 +20,43 @@ from typing import Optional
 
 
 class PresetLoader:
-    """Load and execute SQL preset files."""
+    """Load and execute SQL presets from the _presets table."""
 
-    def __init__(self, preset_dir: Path):
-        self.preset_dir = preset_dir
+    def __init__(self, db: sqlite3.Connection):
+        self.db = db
         self._cache: dict[str, dict] = {}
 
     def list_presets(self) -> list[str]:
         """List available preset names."""
-        if not self.preset_dir.exists():
+        try:
+            rows = self.db.execute("SELECT name FROM _presets ORDER BY name").fetchall()
+            return [r[0] for r in rows]
+        except sqlite3.OperationalError:
             return []
-        return [f.stem for f in self.preset_dir.glob('*.sql')]
 
     def load(self, name: str) -> dict:
         """
-        Parse a preset .sql file.
+        Load a preset from the _presets table.
 
         Returns:
             {
                 'name': str,
                 'description': str,
                 'multi': bool,
-                'queries': [{'name': str, 'sql': str}, ...]
+                'queries': [{'name': str, 'sql': str}, ...],
+                'defaults': {}
             }
         """
         if name in self._cache:
             return self._cache[name]
 
-        path = self.preset_dir / f"{name}.sql"
-        if not path.exists():
-            raise FileNotFoundError(f"Preset not found: {name}")
+        row = self.db.execute(
+            "SELECT sql FROM _presets WHERE name = ?", (name,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"Preset not found: {name}")
 
-        text = path.read_text()
+        text = row[0]
         preset = self._parse(text, name)
         self._cache[name] = preset
         return preset
@@ -63,7 +70,7 @@ class PresetLoader:
         For single presets, returns list of row dicts.
         """
         preset = self.load(name)
-        params = params or {}
+        params = {**preset.get('defaults', {}), **(params or {})}
 
         if preset['multi']:
             results = []
@@ -88,12 +95,13 @@ class PresetLoader:
 
     @staticmethod
     def _parse(text: str, name: str) -> dict:
-        """Parse a .sql preset file into structured dict."""
+        """Parse annotated SQL text into structured dict."""
         preset = {
             'name': name,
             'description': '',
             'multi': False,
-            'queries': []
+            'queries': [],
+            'defaults': {}
         }
 
         current_query_name = 'default'
@@ -124,8 +132,19 @@ class PresetLoader:
                                 })
                         current_query_name = value
                         current_sql_lines = []
-                    elif key == 'param':
-                        pass  # Future: parameter validation
+                    elif key in ('param', 'params'):
+                        # Parse "name (default: value)" patterns
+                        for part in value.split(','):
+                            part = part.strip()
+                            default_match = re.match(
+                                r'(\w+)\s*\(default:\s*(.+?)\)', part)
+                            if default_match:
+                                pname = default_match.group(1)
+                                pval = default_match.group(2).strip()
+                                try:
+                                    preset['defaults'][pname] = int(pval)
+                                except ValueError:
+                                    preset['defaults'][pname] = pval
                 continue
 
             # Skip empty comment lines
@@ -157,3 +176,24 @@ class PresetLoader:
                 else:
                     sql = sql.replace(placeholder, str(value))
         return sql
+
+
+def install_presets(db: sqlite3.Connection, preset_dir: Path):
+    """Read .sql files from a directory and INSERT into _presets table.
+
+    Used by init scripts to bake filesystem presets into the cell.
+    The .sql files are the authoring format; the DB is the runtime source.
+    """
+    preset_dir = Path(preset_dir)
+    if not preset_dir.exists():
+        return
+
+    for f in sorted(preset_dir.glob('*.sql')):
+        text = f.read_text()
+        # Extract name and description from annotations
+        parsed = PresetLoader._parse(text, f.stem)
+        db.execute(
+            "INSERT OR REPLACE INTO _presets (name, description, sql) VALUES (?, ?, ?)",
+            (parsed['name'], parsed['description'], text)
+        )
+    db.commit()

@@ -26,40 +26,33 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def secure_db():
-    """DB with a table to test injection against."""
+    """DB with _presets table and a data table to test injection against."""
     conn = sqlite3.connect(':memory:')
     conn.row_factory = sqlite3.Row
     conn.execute("CREATE TABLE _raw_chunks (id TEXT PRIMARY KEY, content TEXT)")
     conn.execute("INSERT INTO _raw_chunks VALUES ('c1', 'hello world')")
     conn.execute("INSERT INTO _raw_chunks VALUES ('c2', 'foo bar')")
+    conn.execute("CREATE TABLE _presets (name TEXT PRIMARY KEY, description TEXT, sql TEXT)")
+    conn.execute("INSERT INTO _presets VALUES (?, ?, ?)", (
+        'search', 'Search chunks by content',
+        "SELECT id, content FROM _raw_chunks WHERE content LIKE :term"))
     conn.commit()
     return conn
-
-
-@pytest.fixture
-def injection_preset(tmp_path):
-    """Preset with a :param placeholder susceptible to injection."""
-    d = tmp_path / "presets"
-    d.mkdir()
-    (d / "search.sql").write_text("""\
-SELECT id, content FROM _raw_chunks WHERE content LIKE :term
-""")
-    return d
 
 
 class TestSQLInjection:
     """Verify _interpolate escapes dangerous param values."""
 
-    def test_single_quote_escaped(self, injection_preset, secure_db):
+    def test_single_quote_escaped(self, secure_db):
         from flexsearch.retrieve.presets import PresetLoader
-        loader = PresetLoader(injection_preset)
+        loader = PresetLoader(secure_db)
         # This should NOT cause an error — quotes should be escaped
         results = loader.execute(secure_db, 'search', {'term': "it's"})
         assert isinstance(results, list)
 
-    def test_injection_attempt_does_not_destroy_data(self, injection_preset, secure_db):
+    def test_injection_attempt_does_not_destroy_data(self, secure_db):
         from flexsearch.retrieve.presets import PresetLoader
-        loader = PresetLoader(injection_preset)
+        loader = PresetLoader(secure_db)
         # Classic injection attempt
         try:
             loader.execute(secure_db, 'search',
@@ -74,41 +67,38 @@ class TestSQLInjection:
 
 
 class TestPresetEdgeCases:
-    """Edge cases: empty files, caching, missing dir."""
+    """Edge cases: empty presets, caching, missing table."""
 
-    def test_empty_sql_file(self, tmp_path, secure_db):
+    def test_empty_sql_text(self, secure_db):
         from flexsearch.retrieve.presets import PresetLoader
-        d = tmp_path / "presets"
-        d.mkdir()
-        (d / "empty.sql").write_text("")
-        loader = PresetLoader(d)
+        secure_db.execute("INSERT OR REPLACE INTO _presets VALUES ('empty', '', '')")
+        secure_db.commit()
+        loader = PresetLoader(secure_db)
         preset = loader.load('empty')
         assert preset['queries'] == []
 
-    def test_cache_returns_same_object(self, injection_preset):
+    def test_cache_returns_same_object(self, secure_db):
         from flexsearch.retrieve.presets import PresetLoader
-        loader = PresetLoader(injection_preset)
+        loader = PresetLoader(secure_db)
         p1 = loader.load('search')
         p2 = loader.load('search')
         assert p1 is p2  # same cached object
 
-    def test_list_presets_missing_dir(self, tmp_path):
+    def test_list_presets_no_table(self):
         from flexsearch.retrieve.presets import PresetLoader
-        loader = PresetLoader(tmp_path / "nonexistent")
+        conn = sqlite3.connect(':memory:')
+        conn.row_factory = sqlite3.Row
+        loader = PresetLoader(conn)
         assert loader.list_presets() == []
+        conn.close()
 
-    def test_multi_query_error_captured(self, tmp_path, secure_db):
+    def test_multi_query_error_captured(self, secure_db):
         from flexsearch.retrieve.presets import PresetLoader
-        d = tmp_path / "presets"
-        d.mkdir()
-        (d / "bad-multi.sql").write_text("""\
--- @multi: true
--- @query: good
-SELECT COUNT(*) as n FROM _raw_chunks;
--- @query: bad
-SELECT * FROM nonexistent_table;
-""")
-        loader = PresetLoader(d)
+        secure_db.execute("INSERT OR REPLACE INTO _presets VALUES (?, ?, ?)", (
+            'bad-multi', 'Multi with bad query',
+            "-- @multi: true\n-- @query: good\nSELECT COUNT(*) as n FROM _raw_chunks;\n-- @query: bad\nSELECT * FROM nonexistent_table;"))
+        secure_db.commit()
+        loader = PresetLoader(secure_db)
         results = loader.execute(secure_db, 'bad-multi')
         good = next(r for r in results if r['query'] == 'good')
         bad = next(r for r in results if r['query'] == 'bad')
