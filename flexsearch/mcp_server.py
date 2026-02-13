@@ -124,6 +124,10 @@ def execute_query(db: sqlite3.Connection, query: str) -> str:
         if upper.startswith(kw):
             return json.dumps({"error": f"Write operations not allowed: {kw}"})
 
+    # Materialize vec_search() table sources into temp tables
+    from flexsearch.retrieve.vec_search import materialize_vec_search
+    sql = materialize_vec_search(db, sql)
+
     try:
         rows = db.execute(sql).fetchall()
         results = [dict(r) for r in rows]
@@ -155,10 +159,10 @@ def build_instructions() -> str:
         "  SELECT name FROM sqlite_master WHERE name LIKE '_edges_%'  # Edge tables",
         "",
         "SEMANTIC SEARCH:",
-        "  SELECT j.value->>'$.id' as id, CAST(j.value->>'$.score' AS REAL) as score",
-        "  FROM json_each(vec_search('_raw_chunks', 'your query')) j",
-        "  JOIN messages m ON j.value->>'$.id' = m.id",
-        "  ORDER BY score DESC LIMIT 10",
+        "  SELECT v.id, v.score, m.content",
+        "  FROM vec_search('_raw_chunks', 'your query') v",
+        "  JOIN messages m ON v.id = m.id",
+        "  ORDER BY v.score DESC LIMIT 10",
         "",
         "HYBRID (FTS + semantic + graph):",
         "  vec_search('_raw_chunks', 'query')                    # Semantic candidates",

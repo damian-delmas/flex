@@ -21,6 +21,9 @@ Performance:
 Memory: ~15MB per 10k docs (384-dim vectors)
 """
 
+import json
+import re
+
 import numpy as np
 from typing import Optional, List, Dict, Any
 
@@ -259,6 +262,77 @@ class VectorCache:
         return f"VectorCache({self.size} vectors, {self.dims}d, {self.memory_mb:.1f}MB)"
 
 
+def materialize_vec_search(db, sql: str) -> str:
+    """Transparently materialize vec_search() as a temp table.
+
+    AI writes:  FROM vec_search('_raw_chunks', 'query') v
+    Becomes:    FROM _vec_results v  (temp table with id TEXT, score REAL)
+
+    Skips if wrapped in json_each() (backward compat).
+    Only triggers when vec_search appears as a table source (after FROM/JOIN).
+    """
+    lower = sql.lower()
+
+    # json_each(vec_search(...)) — explicit pattern, don't touch
+    if 'json_each' in lower:
+        return sql
+
+    # Find vec_search(...) call — balanced paren matching for quoted strings
+    start = re.search(r'vec_search\s*\(', sql)
+    if not start:
+        return sql
+
+    # Only materialize when used as a table source
+    before = sql[:start.start()].rstrip().upper()
+    if not (before.endswith('FROM') or before.endswith('JOIN') or before.endswith(',')):
+        return sql
+
+    # Find the matching close paren (handles quoted strings with parens)
+    paren_start = start.end() - 1
+    depth = 0
+    in_quote = False
+    end_pos = None
+    for i in range(paren_start, len(sql)):
+        c = sql[i]
+        if in_quote:
+            if c == "'" and (i + 1 >= len(sql) or sql[i + 1] != "'"):
+                in_quote = False
+        else:
+            if c == "'":
+                in_quote = True
+            elif c == '(':
+                depth += 1
+            elif c == ')':
+                depth -= 1
+                if depth == 0:
+                    end_pos = i + 1
+                    break
+    if end_pos is None:
+        return sql
+
+    # Execute the vec_search call as a scalar to get JSON
+    call_expr = sql[start.start():end_pos]
+    try:
+        row = db.execute(f"SELECT {call_expr}").fetchone()
+        if not row or not row[0]:
+            return sql
+        results = json.loads(row[0])
+    except Exception:
+        return sql  # let original SQL fail naturally
+
+    # Populate temp table
+    db.execute("DROP TABLE IF EXISTS _vec_results")
+    db.execute("CREATE TEMP TABLE _vec_results (id TEXT PRIMARY KEY, score REAL)")
+    if results:
+        db.executemany(
+            "INSERT INTO _vec_results VALUES (?, ?)",
+            [(r['id'], r['score']) for r in results]
+        )
+
+    # Rewrite: replace vec_search(...) with _vec_results
+    return sql[:start.start()] + "_vec_results" + sql[end_pos:]
+
+
 def register_vec_search(conn, caches: dict, embed_fn):
     """Register vec_search as a SQL-callable function.
 
@@ -269,14 +343,16 @@ def register_vec_search(conn, caches: dict, embed_fn):
         caches: {table_name: VectorCache} e.g. {'_raw_chunks': cache1, '_raw_sources': cache2}
         embed_fn: callable(text) -> np.ndarray (384d)
 
-    SQL usage:
-        SELECT j.value->>'$.id' as id, CAST(j.value->>'$.score' AS REAL) as score
-        FROM json_each(vec_search('_raw_chunks', 'authentication')) j;
+    SQL usage (natural — MCP/CLI materialize automatically):
+        SELECT v.id, v.score, m.content
+        FROM vec_search('_raw_chunks', 'authentication') v
+        JOIN messages m ON v.id = m.id
+        ORDER BY v.score DESC LIMIT 10;
 
         -- With contrastive:
-        SELECT * FROM json_each(vec_search('_raw_chunks', 'caching', 'NOT kubernetes'));
+        SELECT v.id, v.score FROM vec_search('_raw_chunks', 'caching', 'NOT kubernetes') v;
 
-        -- With diversity:
+        -- Explicit json_each still works (backward compat):
         SELECT * FROM json_each(vec_search('_raw_chunks', 'auth', NULL, 1));
     """
     import json
