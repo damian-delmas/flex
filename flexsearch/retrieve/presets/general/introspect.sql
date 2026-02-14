@@ -39,7 +39,7 @@ FROM _enrich_source_graph g
 GROUP BY g.community_id ORDER BY sources DESC LIMIT 8;
 
 -- @query: presets
-SELECT name, description FROM _presets ORDER BY name;
+SELECT name, description, params FROM _presets ORDER BY name;
 
 -- @query: retrieval
 SELECT key, value FROM _meta WHERE key LIKE 'retrieval:%' ORDER BY key;

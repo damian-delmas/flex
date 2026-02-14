@@ -161,7 +161,7 @@ class TestDefaults:
         from flexsearch.retrieve.presets import PresetLoader
         # Insert a preset with defaults
         qmem_cell.execute(
-            "INSERT OR REPLACE INTO _presets VALUES (?, ?, ?)",
+            "INSERT OR REPLACE INTO _presets (name, description, params, sql) VALUES (?, ?, '', ?)",
             ('limited', 'Test with defaults',
              "-- @params: limit (default: 3)\nSELECT id FROM _raw_chunks LIMIT :limit"))
         qmem_cell.commit()
@@ -172,7 +172,7 @@ class TestDefaults:
     def test_explicit_params_override_defaults(self, qmem_cell):
         from flexsearch.retrieve.presets import PresetLoader
         qmem_cell.execute(
-            "INSERT OR REPLACE INTO _presets VALUES (?, ?, ?)",
+            "INSERT OR REPLACE INTO _presets (name, description, params, sql) VALUES (?, ?, '', ?)",
             ('limited', 'Test with defaults',
              "-- @params: limit (default: 3)\nSELECT id FROM _raw_chunks LIMIT :limit"))
         qmem_cell.commit()

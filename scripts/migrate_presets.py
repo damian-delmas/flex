@@ -42,14 +42,20 @@ def migrate_cell(cell_name: str, preset_dirs: list[Path]):
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
 
-        # Create table if missing
+        # Create table if missing, add params column if needed
         conn.execute("""
             CREATE TABLE IF NOT EXISTS _presets (
                 name TEXT PRIMARY KEY,
                 description TEXT,
+                params TEXT DEFAULT '',
                 sql TEXT
             )
         """)
+        # Migration: add params column to existing tables
+        try:
+            conn.execute("ALTER TABLE _presets ADD COLUMN params TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
         # Install presets from each dir
         from flexsearch.retrieve.presets import install_presets

@@ -32,9 +32,9 @@ def secure_db():
     conn.execute("CREATE TABLE _raw_chunks (id TEXT PRIMARY KEY, content TEXT)")
     conn.execute("INSERT INTO _raw_chunks VALUES ('c1', 'hello world')")
     conn.execute("INSERT INTO _raw_chunks VALUES ('c2', 'foo bar')")
-    conn.execute("CREATE TABLE _presets (name TEXT PRIMARY KEY, description TEXT, sql TEXT)")
-    conn.execute("INSERT INTO _presets VALUES (?, ?, ?)", (
-        'search', 'Search chunks by content',
+    conn.execute("CREATE TABLE _presets (name TEXT PRIMARY KEY, description TEXT, params TEXT DEFAULT '', sql TEXT)")
+    conn.execute("INSERT INTO _presets (name, description, params, sql) VALUES (?, ?, ?, ?)", (
+        'search', 'Search chunks by content', 'term (required)',
         "SELECT id, content FROM _raw_chunks WHERE content LIKE :term"))
     conn.commit()
     return conn
@@ -71,7 +71,7 @@ class TestPresetEdgeCases:
 
     def test_empty_sql_text(self, secure_db):
         from flexsearch.retrieve.presets import PresetLoader
-        secure_db.execute("INSERT OR REPLACE INTO _presets VALUES ('empty', '', '')")
+        secure_db.execute("INSERT OR REPLACE INTO _presets (name, description, params, sql) VALUES ('empty', '', '', '')")
         secure_db.commit()
         loader = PresetLoader(secure_db)
         preset = loader.load('empty')
@@ -94,8 +94,8 @@ class TestPresetEdgeCases:
 
     def test_multi_query_error_captured(self, secure_db):
         from flexsearch.retrieve.presets import PresetLoader
-        secure_db.execute("INSERT OR REPLACE INTO _presets VALUES (?, ?, ?)", (
-            'bad-multi', 'Multi with bad query',
+        secure_db.execute("INSERT OR REPLACE INTO _presets (name, description, params, sql) VALUES (?, ?, ?, ?)", (
+            'bad-multi', 'Multi with bad query', '',
             "-- @multi: true\n-- @query: good\nSELECT COUNT(*) as n FROM _raw_chunks;\n-- @query: bad\nSELECT * FROM nonexistent_table;"))
         secure_db.commit()
         loader = PresetLoader(secure_db)

@@ -81,10 +81,11 @@ CREATE TABLE _meta (
     value TEXT
 );
 
--- PRESETS (SQL skills — discoverable via SELECT name, description FROM _presets)
+-- PRESETS (SQL skills — discoverable via SELECT name, description, params FROM _presets)
 CREATE TABLE _presets (
     name TEXT PRIMARY KEY,
     description TEXT,
+    params TEXT DEFAULT '',
     sql TEXT
 );
 
@@ -256,14 +257,14 @@ def qmem_cell():
     conn.execute("INSERT INTO _enrich_source_graph VALUES ('src-plan', 0.45, 0, 1, 2)")
 
     # Presets
-    conn.execute("INSERT INTO _presets VALUES (?, ?, ?)", (
-        'hub-sources', 'Find high-centrality sources',
-        "-- @name: hub-sources\n-- @param: min_centrality\nSELECT source_id, centrality\nFROM _enrich_source_graph\nWHERE centrality >= :min_centrality\nORDER BY centrality DESC"))
-    conn.execute("INSERT INTO _presets VALUES (?, ?, ?)", (
-        'overview', 'Cell overview counts and sources',
+    conn.execute("INSERT INTO _presets (name, description, params, sql) VALUES (?, ?, ?, ?)", (
+        'hub-sources', 'Find high-centrality sources', 'min_centrality (required)',
+        "-- @name: hub-sources\n-- @params: min_centrality (required)\nSELECT source_id, centrality\nFROM _enrich_source_graph\nWHERE centrality >= :min_centrality\nORDER BY centrality DESC"))
+    conn.execute("INSERT INTO _presets (name, description, params, sql) VALUES (?, ?, ?, ?)", (
+        'overview', 'Cell overview counts and sources', '',
         "-- @name: overview\n-- @multi: true\n\n-- @query: counts\nSELECT COUNT(*) as n FROM _raw_chunks;\n\n-- @query: sources\nSELECT source_id, doc_type FROM _raw_sources ORDER BY file_date DESC;"))
-    conn.execute("INSERT INTO _presets VALUES (?, ?, ?)", (
-        'all-chunks', 'All chunks ordered by time',
+    conn.execute("INSERT INTO _presets (name, description, params, sql) VALUES (?, ?, ?, ?)", (
+        'all-chunks', 'All chunks ordered by time', '',
         "SELECT id, content, timestamp FROM _raw_chunks ORDER BY timestamp"))
 
     conn.commit()

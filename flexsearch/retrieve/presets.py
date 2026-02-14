@@ -99,6 +99,7 @@ class PresetLoader:
         preset = {
             'name': name,
             'description': '',
+            'params': '',
             'multi': False,
             'queries': [],
             'defaults': {}
@@ -133,6 +134,7 @@ class PresetLoader:
                         current_query_name = value
                         current_sql_lines = []
                     elif key in ('param', 'params'):
+                        preset['params'] = value
                         # Parse "name (default: value)" patterns
                         for part in value.split(','):
                             part = part.strip()
@@ -190,10 +192,10 @@ def install_presets(db: sqlite3.Connection, preset_dir: Path):
 
     for f in sorted(preset_dir.glob('*.sql')):
         text = f.read_text()
-        # Extract name and description from annotations
+        # Extract name, description, and params from annotations
         parsed = PresetLoader._parse(text, f.stem)
         db.execute(
-            "INSERT OR REPLACE INTO _presets (name, description, sql) VALUES (?, ?, ?)",
-            (parsed['name'], parsed['description'], text)
+            "INSERT OR REPLACE INTO _presets (name, description, params, sql) VALUES (?, ?, ?, ?)",
+            (parsed['name'], parsed['description'], parsed.get('params', ''), text)
         )
     db.commit()
