@@ -285,6 +285,18 @@ def main():
     set_meta(db, 'view:sections:rename:source_id', 'doc_id')
     set_meta(db, 'view:sections:rename:title', 'doc_title')
 
+    # Retrieval contract — the cell describes its own search model
+    set_meta(db, 'retrieval:phase1',
+             'PRE-SELECTION masks (numpy on full N): '
+             'community:N→community_id, kind:TYPE→kind, limit:N')
+    set_meta(db, 'retrieval:phase2',
+             'LANDSCAPE scoring (numpy on full N): '
+             'hubs→centrality, recent[:N]→timestamp, diverse, unlike:TEXT')
+    set_meta(db, 'retrieval:phase3',
+             'SQL COMPOSITION (on K candidates): '
+             'JOIN messages ON v.id = m.id — kind, community_id, centrality, '
+             'is_hub, action, target_file, timestamp, project')
+
     print("Meta populated.")
 
     # ═════════════════════════════════════════════════

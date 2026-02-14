@@ -41,6 +41,9 @@ GROUP BY g.community_id ORDER BY sources DESC LIMIT 8;
 -- @query: presets
 SELECT name, description FROM _presets ORDER BY name;
 
+-- @query: retrieval
+SELECT key, value FROM _meta WHERE key LIKE 'retrieval:%' ORDER BY key;
+
 -- @query: sample
 SELECT substr(content, 1, 150) as preview FROM _raw_chunks
 WHERE length(content) > 100 ORDER BY RANDOM() LIMIT 3;

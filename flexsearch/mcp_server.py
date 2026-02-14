@@ -160,8 +160,53 @@ def execute_query(db: sqlite3.Connection, query: str) -> str:
 # Build Instructions
 # ============================================================
 
+def _build_retrieval_instructions(db) -> list[str]:
+    """Build retrieval section from _meta retrieval:* keys, with fallback."""
+    parts = []
+
+    # Read retrieval contract from cell
+    phase1 = get_meta(db, 'retrieval:phase1')
+    phase2 = get_meta(db, 'retrieval:phase2')
+    phase3 = get_meta(db, 'retrieval:phase3')
+
+    if phase1 and phase2 and phase3:
+        # Strip phase label prefix from values (they're standalone in _meta
+        # but the formatted rendering adds its own labels)
+        def _strip_prefix(val):
+            """'PRE-SELECTION masks (numpy on full N): foo' → 'foo'"""
+            if ': ' in val:
+                _, rest = val.split(': ', 1)
+                return rest
+            return val
+
+        parts.extend([
+            "RETRIEVAL (3 phases — vec_search is numpy on full N, SQL composes after):",
+            "",
+            "  Phase 1 — PRE-SELECTION (masks before scoring):",
+            f"    {_strip_prefix(phase1)}",
+            "",
+            "  Phase 2 — LANDSCAPE (score modulation on full N):",
+            f"    {_strip_prefix(phase2)}",
+            "",
+            "  Phase 3 — SQL (full AI control on K candidates):",
+            f"    {_strip_prefix(phase3)}",
+        ])
+    else:
+        # Fallback for cells without retrieval keys yet
+        parts.extend([
+            "SEMANTIC SEARCH:",
+            "  vec_search('table', 'query', 'modifiers') → (id, score)",
+            "  Modifiers (3rd arg, space-separated, composable):",
+            "    community:N  kind:TYPE  limit:N     — pre-selection masks",
+            "    hubs  recent[:N]  diverse  unlike:TEXT  — score modulation",
+            "  JOIN messages m ON v.id = m.id         — full SQL after",
+        ])
+
+    return parts
+
+
 def build_instructions() -> str:
-    """Build server instructions from cell descriptions."""
+    """Build server instructions from cell _meta. The cell describes itself."""
     parts = [
         "Flexsearch — SQL-first knowledge engine. Execute read-only SQL on knowledge cells.",
         "",
@@ -170,6 +215,7 @@ def build_instructions() -> str:
     for name, db in _cells.items():
         desc = get_meta(db, 'description') or f"Cell: {name}"
         parts.append(f"  {name}: {desc}")
+
     parts.extend([
         "",
         "ORIENTATION:",
@@ -178,21 +224,20 @@ def build_instructions() -> str:
         "  PRAGMA table_info('messages')                          # View schema",
         "  SELECT name FROM sqlite_master WHERE name LIKE '_edges_%'  # Edge tables",
         "",
+    ])
+
+    # Build retrieval section from first cell that has keys (all cells share the model)
+    for db in _cells.values():
+        parts.extend(_build_retrieval_instructions(db))
+        break
+    parts.append("")
+
+    parts.extend([
         "SEMANTIC SEARCH:",
         "  SELECT v.id, v.score, m.content",
         "  FROM vec_search('_raw_chunks', 'your query') v",
         "  JOIN messages m ON v.id = m.id",
         "  ORDER BY v.score DESC LIMIT 10",
-        "",
-        "  Modifiers (3rd arg, space-separated, composable):",
-        "    hubs            boost hub sources by centrality",
-        "    recent          temporal decay (cell-configured half-life)",
-        "    recent:N        temporal decay with N-day half-life",
-        "    unlike:TEXT     contrastive — demote similarity to TEXT",
-        "    diverse         MMR diversity selection",
-        "    limit:N         override default limit (200)",
-        "    community:N     pre-filter to graph community ID",
-        "    kind:TYPE       pre-filter to semantic kind (read, command, prompt, response, file_operation, message, search, delegation)",
         "",
         "  No modifiers = raw cosine similarity.",
         "  vec_search('_raw_chunks', 'auth', 'hubs recent:7 diverse')",
