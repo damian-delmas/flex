@@ -388,8 +388,8 @@ def flexsearch(query: str, cell: str = "thread") -> str:
     Execute read-only SQL on a knowledge cell.
 
     Args:
-        query: SQL query string
-        cell: Cell name (thread, claude, qmem, inventory, thread-codebase)
+        query: SQL query string or @preset
+        cell: Cell name (discovered at startup)
     """
     db = get_cell(cell)
     if db is None:
@@ -499,9 +499,22 @@ def main():
     tool = mcp._tool_manager._tools.get('flexsearch')
     if tool:
         tool.description = (
-            f"Execute read-only SQL on a knowledge cell.\n\n"
+            f"SQL-first knowledge engine. Each cell is a self-describing SQLite database "
+            f"with chunks, embeddings, and graph intelligence.\n\n"
+            f"Cells: {cell_list}\n\n"
+            f"Orient yourself:\n"
+            f"  @introspect                          — cell shape, schema, presets, samples\n"
+            f"  PRAGMA table_info('messages')        — view columns\n"
+            f"  SELECT name, description FROM _presets — available preset queries\n\n"
+            f"Query patterns:\n"
+            f"  SQL:      SELECT * FROM messages WHERE project = 'flexsearch' LIMIT 10\n"
+            f"  Vector:   SELECT v.id, v.score, m.content\n"
+            f"            FROM vec_search('_raw_chunks', 'query', 'hubs recent:7 diverse') v\n"
+            f"            JOIN messages m ON v.id = m.id LIMIT 10\n"
+            f"  Presets:  @sessions limit=5\n"
+            f"            @genealogy concept=caching\n\n"
             f"Args:\n"
-            f"    query: SQL query string\n"
+            f"    query: SQL query string or @preset\n"
             f"    cell: Cell name ({cell_list})"
         )
 
