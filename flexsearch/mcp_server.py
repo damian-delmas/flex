@@ -286,6 +286,7 @@ def _log_query(cell: str, query: str, result_json: str, elapsed_ms: float):
             "query": query,
             "result_count": result_count,
             "elapsed_ms": round(elapsed_ms, 1),
+            "result": parsed,
         }
         with open(history_path, 'a') as f:
             f.write(json.dumps(entry, default=str) + '\n')
