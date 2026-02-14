@@ -19,7 +19,9 @@ import argparse
 import hashlib
 import os
 import shutil
+import subprocess
 import time
+from datetime import datetime
 
 import numpy as np
 from pathlib import Path
@@ -134,6 +136,69 @@ CREATE TRIGGER IF NOT EXISTS raw_chunks_au AFTER UPDATE ON _raw_chunks BEGIN
     INSERT INTO chunks_fts(rowid, content) VALUES (new.rowid, new.content);
 END;
 """
+
+
+def _git_creation_date(filepath: str) -> str | None:
+    """Get file creation date from git log. Returns YYMMDD-HHMM or None."""
+    try:
+        result = subprocess.run(
+            ['git', 'log', '--follow', '--format=%at', '--diff-filter=A', '--', filepath],
+            capture_output=True, text=True, timeout=5,
+            cwd=os.path.dirname(filepath)
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # Take the earliest (last line = first commit)
+            timestamps = result.stdout.strip().split('\n')
+            ts = int(timestamps[-1])
+            dt = datetime.fromtimestamp(ts)
+            return dt.strftime('%y%m%d-%H%M')
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        pass
+    return None
+
+
+def _mtime_date(filepath: str) -> str | None:
+    """Get file modification date from filesystem. Returns YYMMDD-HHMM or None."""
+    try:
+        ts = os.path.getmtime(filepath)
+        dt = datetime.fromtimestamp(ts)
+        return dt.strftime('%y%m%d-%H%M')
+    except OSError:
+        return None
+
+
+def backfill_file_dates(db, corpus_root: str):
+    """Backfill NULL file_date values from git creation date, then filesystem mtime."""
+    nulls = db.execute(
+        "SELECT source_id, source_path FROM _raw_sources WHERE file_date IS NULL"
+    ).fetchall()
+
+    if not nulls:
+        return 0
+
+    # Check if corpus is in a git repo
+    is_git = os.path.isdir(os.path.join(corpus_root, '.git'))
+
+    filled = 0
+    for row in nulls:
+        path = row[1]  # source_path (absolute)
+        date = None
+
+        if is_git:
+            date = _git_creation_date(path)
+
+        if not date:
+            date = _mtime_date(path)
+
+        if date:
+            db.execute(
+                "UPDATE _raw_sources SET file_date = ? WHERE source_id = ?",
+                (date, row[0])
+            )
+            filled += 1
+
+    db.commit()
+    return filled
 
 
 def make_source_id(path: str) -> str:
@@ -302,6 +367,17 @@ def main():
     print("Validation passed (no orphans, no duplicate source edges).")
 
     # ═════════════════════════════════════════════════
+    # 5b. BACKFILL FILE DATES
+    # ═════════════════════════════════════════════════
+    null_dates = db.execute(
+        "SELECT COUNT(*) FROM _raw_sources WHERE file_date IS NULL"
+    ).fetchone()[0]
+    if null_dates:
+        print(f"Backfilling {null_dates} missing file_date values...")
+        filled = backfill_file_dates(db, corpus_root)
+        print(f"  Filled {filled}/{null_dates} from git/mtime.")
+
+    # ═════════════════════════════════════════════════
     # 6. POPULATE _meta
     # ═════════════════════════════════════════════════
     desc = args.description or (
@@ -401,7 +477,7 @@ def main():
         scores = compute_scores(G)
         persist(db, scores)
         hubs = len(scores.get('hubs', []))
-        comms = len(set(scores.get('community', {}).values())) if scores.get('community') else 0
+        comms = len(scores.get('communities', []))
         print(f"Meditate: {hubs} hubs, {comms} communities, {edge_count} edges")
     else:
         print("No graph built (no embeddings?)")
