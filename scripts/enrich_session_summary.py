@@ -349,10 +349,12 @@ def build_community_labels(db):
 import re
 
 _GARBAGE_TITLE_PATTERNS = [
-    re.compile(r'^[/<\[]'),       # starts with path, XML tag, or bracket
-    re.compile(r'^```'),           # starts with code fence
+    re.compile(r"""^['"]?[/<\[]"""),  # starts with path, XML tag, or bracket (possibly quoted)
+    re.compile(r'^```'),              # starts with code fence
     re.compile(r'^(SYSTEM|system|Human|Assistant)'),  # role prefix
-    re.compile(r'^\s*$'),          # blank
+    re.compile(r'^\s*$'),             # blank
+    re.compile(r'^(Base directory|Read |Write |Edit )'),  # tool-like prefix
+    re.compile(r'^https?://'),        # URL
 ]
 
 
@@ -379,11 +381,11 @@ def make_display_title(title, chunks):
     if title and not _is_garbage_title(title):
         return title.strip()
 
-    # Fall back to first user prompt
+    # Fall back to first user prompt that isn't garbage
     for chunk in chunks:
         if chunk.get('kind') == 'prompt':
             content = chunk.get('content', '').strip()
-            if content and len(content) >= 10 and not _GARBAGE_TITLE_PATTERNS[0].match(content):
+            if content and not _is_garbage_title(content):
                 # Truncate to 80 chars at word boundary
                 if len(content) <= 80:
                     return content
