@@ -9,7 +9,7 @@ Discovery:
     SELECT name, description FROM _presets;
 
 Execution:
-    PresetLoader(db).execute(db, 'introspect')
+    PresetLoader(db).execute(db, 'orient')
     PresetLoader(db).execute(db, 'sessions', {'limit': 5})
 """
 

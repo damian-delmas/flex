@@ -1,4 +1,4 @@
--- @name: introspect
+-- @name: orient
 -- @description: Full cell orientation — shape, schema, graph intelligence, presets, samples
 -- @multi: true
 

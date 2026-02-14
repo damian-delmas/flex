@@ -4,7 +4,7 @@ flex — sandboxed CLI for flexsearch cells.
 
 Three sandboxes:
   flex search "SELECT ..."         Read-only SQL
-  flex search @introspect          Named preset
+  flex search @orient              Named preset
   flex search @digest days=7       Preset with params
   flex meditate                    Graph rebuild (_enrich_* only)
   flex index [path]                Ingest pipeline (_raw_*, _edges_*)

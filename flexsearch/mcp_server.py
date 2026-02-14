@@ -11,6 +11,7 @@ Usage:
     python -m flexsearch.mcp_server --cell thread --cell qmem # multi-cell
 """
 
+import asyncio
 import json
 import sqlite3
 import sys
@@ -18,7 +19,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.lowlevel import Server, NotificationOptions
+from mcp.server.stdio import stdio_server
+import mcp.types as types
 
 from flexsearch.core import open_cell, get_meta
 
@@ -77,7 +80,7 @@ def get_cell(name: str) -> sqlite3.Connection | None:
     # Rebuild instructions when a new cell is discovered lazily
     if is_new:
         try:
-            mcp._mcp_server.instructions = build_instructions()
+            server.instructions = build_instructions()
         except Exception:
             pass  # server may not be initialized yet during startup
 
@@ -191,6 +194,10 @@ def execute_preset(db: sqlite3.Connection, query: str) -> str:
 
     parts = query[1:].split()
     preset_name = parts[0]
+
+    # Alias common guesses to orient
+    if preset_name in ('help', 'info', 'about', 'introspect', 'orientation'):
+        preset_name = 'orient'
     params = {}
     for p in parts[1:]:
         if '=' in p:
@@ -339,22 +346,55 @@ def build_instructions() -> str:
         "  WHERE is_hub = 1 ORDER BY centrality DESC              # Graph intelligence",
         "",
         "PRESETS (pass @name instead of SQL — batched multi-query, saves round trips):",
-        "  @introspect                        # Full cell orientation (always available)",
+        "  @orient                             # Full cell orientation (always available)",
         "  SELECT name, description FROM _presets  # Discover all presets",
         "",
         "IMPORTANT: Presets are invoked by passing @name as the query parameter.",
         "  Examples: query=\"@orient\", query=\"@sessions limit=5\", query=\"@genealogy concept=caching\"",
-        "  Start with @introspect to orient, then SELECT name, description FROM _presets to see all available.",
+        "  Start with @orient to orient, then SELECT name, description FROM _presets to see all available.",
         "",
     ])
     return "\n".join(parts)
 
 
 # ============================================================
+# Tool Description & Schema
+# ============================================================
+
+def _build_tool_description() -> str:
+    """Build tool description. Instructions carry the real context."""
+    return (
+        "SQL-first knowledge engine. Each cell is a self-describing SQLite database "
+        "with chunks, embeddings, and graph intelligence."
+    )
+
+
+def _build_tool_schema() -> dict:
+    """Build JSON Schema — lean interface contract. Instructions do the teaching."""
+    cell_list = sorted(_known_cells)
+    return {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "SQL query, @preset name, or vec_search expression",
+            },
+            "cell": {
+                "type": "string",
+                "description": "Knowledge cell to query",
+                "default": "thread",
+                "enum": cell_list if cell_list else ["thread"],
+            },
+        },
+        "required": ["query"],
+    }
+
+
+# ============================================================
 # MCP Server
 # ============================================================
 
-mcp = FastMCP(name="flexsearch")
+server = Server("flexsearch")
 
 
 def _log_query(cell: str, query: str, result_json: str, elapsed_ms: float):
@@ -382,15 +422,32 @@ def _log_query(cell: str, query: str, result_json: str, elapsed_ms: float):
         pass  # never break queries for logging
 
 
-@mcp.tool()
-def flexsearch(query: str, cell: str = "thread") -> str:
-    """
-    Execute read-only SQL on a knowledge cell.
+@server.list_tools()
+async def handle_list_tools() -> list[types.Tool]:
+    """Return the flexsearch tool with dynamic description and schema."""
+    return [
+        types.Tool(
+            name="flexsearch",
+            description=_build_tool_description(),
+            inputSchema=_build_tool_schema(),
+        )
+    ]
 
-    Args:
-        query: SQL query string or @preset
-        cell: Cell name (discovered at startup)
-    """
+
+@server.call_tool()
+async def handle_call_tool(
+    name: str, arguments: dict | None
+) -> list[types.TextContent]:
+    """Handle flexsearch tool calls."""
+    if name != "flexsearch":
+        return [types.TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
+
+    if not arguments or "query" not in arguments:
+        return [types.TextContent(type="text", text=json.dumps({"error": "Missing required argument: query"}))]
+
+    query = arguments["query"]
+    cell = arguments.get("cell", "thread")
+
     db = get_cell(cell)
     if db is None:
         available = sorted(_known_cells)
@@ -398,14 +455,14 @@ def flexsearch(query: str, cell: str = "thread") -> str:
         msg = {"error": f"Unknown cell: {cell}", "available": available}
         if on_disk:
             msg["also_on_disk"] = sorted(on_disk)
-        return json.dumps(msg)
+        return [types.TextContent(type="text", text=json.dumps(msg))]
 
     try:
         start = time.monotonic()
         result = execute_query(db, query)
         elapsed_ms = (time.monotonic() - start) * 1000
         _log_query(cell, query, result, elapsed_ms)
-        return result
+        return [types.TextContent(type="text", text=result)]
     finally:
         db.close()
 
@@ -428,8 +485,8 @@ def run_http_server(port: int = 8080):
         async with sse.connect_sse(
             request.scope, request.receive, request._send
         ) as streams:
-            await mcp._mcp_server.run(
-                streams[0], streams[1], mcp._mcp_server.create_initialization_options()
+            await server.run(
+                streams[0], streams[1], server.create_initialization_options()
             )
         return Response()
 
@@ -491,39 +548,23 @@ def main():
     else:
         print("[flexsearch-mcp] Skipping embeddings", file=sys.stderr)
 
-    # Build instructions from cell metadata
-    mcp._mcp_server.instructions = build_instructions()
-
-    # Dynamic tool description — inject discovered cell names into docstring
-    cell_list = ', '.join(sorted(_known_cells))
-    tool = mcp._tool_manager._tools.get('flexsearch')
-    if tool:
-        tool.description = (
-            f"SQL-first knowledge engine. Each cell is a self-describing SQLite database "
-            f"with chunks, embeddings, and graph intelligence.\n\n"
-            f"Cells: {cell_list}\n\n"
-            f"Orient yourself:\n"
-            f"  @introspect                          — cell shape, schema, presets, samples\n"
-            f"  PRAGMA table_info('messages')        — view columns\n"
-            f"  SELECT name, description FROM _presets — available preset queries\n\n"
-            f"Query patterns:\n"
-            f"  SQL:      SELECT * FROM messages WHERE project = 'flexsearch' LIMIT 10\n"
-            f"  Vector:   SELECT v.id, v.score, m.content\n"
-            f"            FROM vec_search('_raw_chunks', 'query', 'hubs recent:7 diverse') v\n"
-            f"            JOIN messages m ON v.id = m.id LIMIT 10\n"
-            f"  Presets:  @sessions limit=5\n"
-            f"            @genealogy concept=caching\n\n"
-            f"Args:\n"
-            f"    query: SQL query string or @preset\n"
-            f"    cell: Cell name ({cell_list})"
-        )
+    # Set instructions directly on the server — no private API access
+    server.instructions = build_instructions()
 
     print(f"[flexsearch-mcp] Ready — {len(_known_cells)} cells, {len(_vec_state)} cached", file=sys.stderr)
 
     if args.http:
         run_http_server(args.port)
     else:
-        mcp.run()
+        asyncio.run(_run_stdio())
+
+
+async def _run_stdio():
+    """Run the server over stdio transport."""
+    async with stdio_server() as (read_stream, write_stream):
+        await server.run(
+            read_stream, write_stream, server.create_initialization_options()
+        )
 
 
 if __name__ == "__main__":
