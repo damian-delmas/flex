@@ -10,7 +10,6 @@ Output: _enrich_session_summary table (source_id PK → auto-JOINs sessions view
 
 import json
 import os
-import re
 import sys
 import time
 from collections import Counter
@@ -44,7 +43,8 @@ CREATE TABLE IF NOT EXISTS _enrich_session_summary (
     source_id TEXT PRIMARY KEY,
     topic_clusters TEXT,
     community_label TEXT,
-    topic_summary TEXT
+    topic_summary TEXT,
+    display_title TEXT
 )
 """
 
@@ -139,51 +139,13 @@ def load_session_chunks(db, source_id):
 # Cluster labeling
 # ---------------------------------------------------------------------------
 
-# Stopwords for keyword extraction (common in code/conversation contexts)
-_STOPWORDS = frozenset(
-    'the a an and or but is are was were be been being have has had do does '
-    'did will would shall should may might can could of in to for with on at '
-    'by from as into through during before after above below between out off '
-    'over under again further then once here there when where why how all each '
-    'every both few more most other some such no nor not only own same so than '
-    'too very just don does that this these those it its he she they them we '
-    'you your his her their our my me him us what which who whom if else '
-    'file use using used need also get set let new now way like make sure '
-    'one two want going still try trying work working right see look '
-    'tool result output content text data type name value'.split()
-)
-
-
-def _extract_content_keywords(chunks, max_keywords=5):
-    """Extract signal-dense keywords from chunk content snippets.
-
-    Takes first 30 non-boilerplate chars of each chunk's content,
-    tokenizes on non-alpha, filters stopwords, returns top keywords by freq.
-    """
-    word_counts = Counter()
-    for ch in chunks:
-        content = (ch.get('content') or '').strip()
-        if not content:
-            continue
-        # First 80 chars — enough for signal, avoids code blocks
-        snippet = content[:80].lower()
-        # Tokenize: split on non-alpha
-        tokens = re.findall(r'[a-z_][a-z0-9_]{2,}', snippet)
-        for tok in tokens:
-            if tok not in _STOPWORDS and not tok.startswith('__'):
-                word_counts[tok] += 1
-    # Return top keywords
-    return [w for w, _ in word_counts.most_common(max_keywords)]
-
-
 def label_cluster(chunks, cluster_indices):
     """Label a cluster from its centroid-adjacent chunks.
 
     Priority: file basenames > action pattern > kind pattern > content snippet.
-    Returns (label, keywords) tuple — keywords from centroid-adjacent content.
     """
     if not cluster_indices:
-        return "mixed", []
+        return "mixed"
 
     # Compute centroid
     vecs = np.array([chunks[i]['embedding'] for i in cluster_indices])
@@ -196,9 +158,6 @@ def label_cluster(chunks, cluster_indices):
     nearest_idx = np.argsort(sims)[-top_k:][::-1]
     nearest_chunks = [chunks[cluster_indices[i]] for i in nearest_idx]
 
-    # Extract keywords from centroid-adjacent chunks
-    keywords = _extract_content_keywords(nearest_chunks, max_keywords=5)
-
     # Strategy 1: file basenames (deduplicated)
     files = []
     for ch in nearest_chunks:
@@ -207,7 +166,7 @@ def label_cluster(chunks, cluster_indices):
             if basename and basename not in files:
                 files.append(basename)
     if files:
-        return ' + '.join(files[:3]), keywords
+        return ' + '.join(files[:3])
 
     # Strategy 2: dominant action (mapped to human label)
     actions = [ch['action'] for ch in nearest_chunks if ch['action']]
@@ -217,10 +176,8 @@ def label_cluster(chunks, cluster_indices):
         # MCP tools: extract the last segment
         if top_action.startswith('mcp__'):
             parts = top_action.split('__')
-            label = parts[-1] if len(parts) > 2 else 'MCP tool'
-        else:
-            label = ACTION_MAP.get(top_action, top_action)
-        return label, keywords
+            return parts[-1] if len(parts) > 2 else 'MCP tool'
+        return ACTION_MAP.get(top_action, top_action)
 
     # Strategy 3: dominant kind from ALL cluster chunks (not just centroid)
     all_cluster_chunks = [chunks[i] for i in cluster_indices]
@@ -228,9 +185,9 @@ def label_cluster(chunks, cluster_indices):
     if kinds:
         counts = Counter(kinds)
         top_kind = counts.most_common(1)[0][0]
-        return KIND_MAP.get(top_kind, top_kind), keywords
+        return KIND_MAP.get(top_kind, top_kind)
 
-    return "mixed", keywords
+    return "mixed"
 
 
 # ---------------------------------------------------------------------------
@@ -283,24 +240,22 @@ def intra_session_topics(chunks):
         indices = [i for i, l in enumerate(labels) if l == lbl]
         count = len(indices)
         pct = round(100.0 * count / total, 1)
-        label_str, kw = label_cluster(chunks, indices)
+        label_str = label_cluster(chunks, indices)
         topics.append({
             'label': label_str,
             'pct': pct,
             'count': count,
-            'keywords': kw,
         })
 
     # Label noise too (instead of generic "other")
     if noise_indices:
         pct = round(100.0 * len(noise_indices) / total, 1)
         if pct >= 5.0:
-            noise_label, noise_kw = label_cluster(chunks, noise_indices)
+            noise_label = label_cluster(chunks, noise_indices)
             topics.append({
                 'label': noise_label,
                 'pct': pct,
                 'count': len(noise_indices),
-                'keywords': noise_kw,
             })
 
     # Merge duplicate labels (e.g. multiple "shell" clusters)
@@ -342,9 +297,7 @@ def short_session_label(chunks):
     else:
         label = "mixed"
 
-    # Extract keywords from all chunks (small session)
-    keywords = _extract_content_keywords(chunks, max_keywords=5)
-    return [{'label': label, 'pct': 100.0, 'count': len(chunks), 'keywords': keywords}]
+    return [{'label': label, 'pct': 100.0, 'count': len(chunks)}]
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +346,8 @@ def build_community_labels(db):
 # ---------------------------------------------------------------------------
 
 # Patterns that indicate a garbage title (raw path, XML, system prompt, etc.)
+import re
+
 _GARBAGE_TITLE_PATTERNS = [
     re.compile(r"""^['"]?[/<\[]"""),  # starts with path, XML tag, or bracket (possibly quoted)
     re.compile(r'^```'),              # starts with code fence
@@ -527,16 +482,21 @@ def main():
         # Compose summary
         summary = compose_summary(topics, comm)
 
+        # Display title (clean title or first user prompt)
+        dtitle = make_display_title(m.get('title'), chunks)
+
         # Insert
         db.execute("""
             INSERT OR REPLACE INTO _enrich_session_summary
-            (source_id, topic_clusters, community_label, topic_summary)
-            VALUES (?, ?, ?, ?)
+            (source_id, topic_clusters, community_label, topic_summary,
+             display_title)
+            VALUES (?, ?, ?, ?, ?)
         """, (
             sid,
             json.dumps(topics),
             comm,
             summary,
+            dtitle,
         ))
         processed += 1
 
