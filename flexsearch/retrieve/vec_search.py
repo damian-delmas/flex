@@ -8,6 +8,7 @@ Landscape modulations (applied on full N array before top-k):
 - Pre-filter masks: community:N, kind:TYPE (zero non-matching)
 - Matrix multiply (corpus-wide cosine similarity)
 - Hub boost: scores *= (1 + weight * centrality)
+- Bridge boost: scores *= (1 + weight) for cross-community connectors
 - Temporal decay: scores *= 1 / (1 + days_ago / half_life)
 - Contrastive (second matmul against negative query)
 - MMR diversity (iterative pairwise selection)
@@ -15,6 +16,7 @@ Landscape modulations (applied on full N array before top-k):
 SQL usage:
     vec_search('_raw_chunks', 'auth')                    -- raw cosine
     vec_search('_raw_chunks', 'auth', 'hubs')            -- hub boost
+    vec_search('_raw_chunks', 'auth', 'bridges')          -- bridge boost
     vec_search('_raw_chunks', 'auth', 'kind:delegation community:12 hubs')
     vec_search('_raw_chunks', 'auth', 'hubs recent:7 diverse unlike:jwt')
 
@@ -41,6 +43,7 @@ def parse_modifiers(modifier_str: str) -> dict:
 
     Tokens (space-separated, composable):
         hubs            hub boost by centrality
+        bridges         bridge boost (cross-community connectors)
         recent          temporal decay (cell-configured half-life)
         recent:N        temporal decay with N-day half-life
         unlike:TEXT     contrastive — demote similarity to TEXT
@@ -49,12 +52,13 @@ def parse_modifiers(modifier_str: str) -> dict:
         community:N     pre-filter to community ID
         kind:TYPE       pre-filter to semantic kind
 
-    Returns dict with keys: hubs, recent, recent_days, unlike, diverse, limit,
-    community, kind.
+    Returns dict with keys: hubs, bridges, recent, recent_days, unlike, diverse,
+    limit, community, kind.
     Unknown tokens silently ignored (forward-compatible).
     """
     result = {
         'hubs': False,
+        'bridges': False,
         'recent': False,
         'recent_days': None,
         'unlike': None,
@@ -70,6 +74,8 @@ def parse_modifiers(modifier_str: str) -> dict:
     for token in modifier_str.strip().split():
         if token == 'hubs':
             result['hubs'] = True
+        elif token == 'bridges':
+            result['bridges'] = True
         elif token == 'diverse':
             result['diverse'] = True
         elif token == 'recent':
@@ -122,6 +128,7 @@ class VectorCache:
         self.centrality: Optional[np.ndarray] = None   # (N,) float32, 0-1 normalized
         self.timestamps: Optional[np.ndarray] = None    # (N,) float64, epoch seconds
         self.is_hub: Optional[np.ndarray] = None        # (N,) bool
+        self.is_bridge: Optional[np.ndarray] = None    # (N,) bool
         # Pre-filter arrays (N,), aligned with self.ids
         self.community_ids: Optional[np.ndarray] = None  # (N,) int32, -1 = unmapped
         self.kinds: Optional[np.ndarray] = None           # (N,) object, '' = unmapped
@@ -204,11 +211,13 @@ class VectorCache:
         # --- Graph columns: centrality, is_hub, community_id (single query) ---
         raw_centrality = np.zeros(N, dtype=np.float32)
         self.is_hub = np.zeros(N, dtype=bool)
+        self.is_bridge = np.zeros(N, dtype=bool)
         self.community_ids = np.full(N, -1, dtype=np.int32)
 
         try:
             rows = db.execute("""
-                SELECT e.chunk_id, g.centrality, g.is_hub, g.community_id
+                SELECT e.chunk_id, g.centrality, g.is_hub, g.community_id,
+                       g.is_bridge
                 FROM _edges_source e
                 JOIN _enrich_source_graph g ON e.source_id = g.source_id
             """).fetchall()
@@ -219,6 +228,7 @@ class VectorCache:
                     self.is_hub[idx] = bool(row[2])
                     if row[3] is not None:
                         self.community_ids[idx] = int(row[3])
+                    self.is_bridge[idx] = bool(row[4])
         except Exception as e:
             print(f"VectorCache: graph columns load failed: {e}", file=sys.stderr)
 
@@ -311,6 +321,12 @@ class VectorCache:
             if modifiers.get('hubs') and self.centrality is not None:
                 weight = float(cfg.get('vec:hubs:weight', 1.3))
                 similarities = similarities * (1.0 + weight * self.centrality)
+
+            # Bridge boost: scores *= (1 + weight) for cross-community connectors
+            if modifiers.get('bridges') and self.is_bridge is not None:
+                weight = float(cfg.get('vec:bridges:weight', 1.5))
+                bridge_boost = np.where(self.is_bridge, 1.0 + weight, 1.0)
+                similarities = similarities * bridge_boost
 
             # Temporal decay: scores *= 1 / (1 + days_ago / half_life)
             if modifiers.get('recent') and self.timestamps is not None:
@@ -563,6 +579,8 @@ def register_vec_search(conn, caches: dict, embed_fn, cell_config: dict = None):
                 'has_community_ids': cache.community_ids is not None,
                 'community_ids_populated': n_comm_set,
                 'has_centrality': cache.centrality is not None,
+                'has_bridges': cache.is_bridge is not None,
+                'bridges_populated': int(cache.is_bridge.sum()) if cache.is_bridge is not None else 0,
                 'has_timestamps': cache.timestamps is not None,
             })
 

@@ -132,9 +132,9 @@ def mod_db():
             (id_, src)
         )
 
-    # src-1 is hub (high centrality, community 1), src-2 low (community 1), src-3 lowest (community 2)
+    # src-1 is hub (high centrality, community 1), src-2 is bridge (community 1), src-3 lowest (community 2)
     conn.execute("INSERT INTO _enrich_source_graph VALUES ('src-1', 0.85, 1, 0, 1)")
-    conn.execute("INSERT INTO _enrich_source_graph VALUES ('src-2', 0.30, 0, 0, 1)")
+    conn.execute("INSERT INTO _enrich_source_graph VALUES ('src-2', 0.30, 0, 1, 1)")
     conn.execute("INSERT INTO _enrich_source_graph VALUES ('src-3', 0.10, 0, 0, 2)")
 
     # Semantic kinds: a=delegation, b=response, c=prompt, d=command, e=delegation
@@ -376,6 +376,7 @@ class TestParseModifiers:
         from flexsearch.retrieve.vec_search import parse_modifiers
         result = parse_modifiers('')
         assert result['hubs'] is False
+        assert result['bridges'] is False
         assert result['recent'] is False
         assert result['diverse'] is False
         assert result['unlike'] is None
@@ -419,10 +420,17 @@ class TestParseModifiers:
         result = parse_modifiers('limit:50')
         assert result['limit'] == 50
 
+    def test_bridges(self):
+        from flexsearch.retrieve.vec_search import parse_modifiers
+        result = parse_modifiers('bridges')
+        assert result['bridges'] is True
+        assert result['hubs'] is False
+
     def test_composed(self):
         from flexsearch.retrieve.vec_search import parse_modifiers
-        result = parse_modifiers('hubs recent:7 diverse unlike:jwt limit:50')
+        result = parse_modifiers('hubs bridges recent:7 diverse unlike:jwt limit:50')
         assert result['hubs'] is True
+        assert result['bridges'] is True
         assert result['recent'] is True
         assert result['recent_days'] == 7
         assert result['diverse'] is True
@@ -469,6 +477,14 @@ class TestLoadColumns:
         idx_c = mod_cache._id_to_idx['c']
         assert mod_cache.is_hub[idx_a] == True
         assert mod_cache.is_hub[idx_c] == False
+
+    def test_is_bridge_loaded(self, mod_cache):
+        assert mod_cache.is_bridge is not None
+        # src-2 (chunks c, e) is bridge
+        idx_c = mod_cache._id_to_idx['c']
+        idx_a = mod_cache._id_to_idx['a']
+        assert mod_cache.is_bridge[idx_c] == True
+        assert mod_cache.is_bridge[idx_a] == False
 
     def test_missing_graph_table_is_safe(self):
         """Cells without _enrich_source_graph don't crash."""
@@ -528,6 +544,45 @@ class TestHubModulation:
             [r['score'] for r in boosted],
             atol=1e-6
         )
+
+
+# =============================================================================
+# Bridge Modulation
+# =============================================================================
+
+class TestBridgeModulation:
+    """Bridge boost modulates cross-community connector scores."""
+
+    def test_bridge_boost_raises_bridge_scores(self, mod_cache):
+        """Bridge chunks (src-2: c, e) should score higher with bridges=True."""
+        query = _make_vec([0.7, 0.7, 0.0])  # closest to 'e' (bridge source)
+        modifiers = {'hubs': False, 'bridges': True, 'recent': False,
+                     'recent_days': None, 'unlike': None, 'diverse': False,
+                     'limit': None, 'community': None, 'kind': None}
+
+        base = cache_search_score(mod_cache, query, 'e')
+        boosted = cache_search_score(mod_cache, query, 'e', modifiers=modifiers, config={})
+        assert boosted > base
+
+    def test_bridge_boost_no_effect_on_non_bridges(self, mod_cache):
+        """Non-bridge chunks should not be boosted."""
+        query = _make_vec([0.0, 0.0, 1.0])  # closest to 'd' (src-3, not bridge)
+        modifiers = {'hubs': False, 'bridges': True, 'recent': False,
+                     'recent_days': None, 'unlike': None, 'diverse': False,
+                     'limit': None, 'community': None, 'kind': None}
+
+        base = cache_search_score(mod_cache, query, 'd')
+        boosted = cache_search_score(mod_cache, query, 'd', modifiers=modifiers, config={})
+        np.testing.assert_allclose(base, boosted, atol=1e-6)
+
+    def test_bridge_no_data_is_noop(self, cache):
+        """Cache without load_columns should not crash with bridges modifier."""
+        query = _make_vec([1.0, 0.0, 0.0])
+        modifiers = {'hubs': False, 'bridges': True, 'recent': False,
+                     'recent_days': None, 'unlike': None, 'diverse': False,
+                     'limit': None, 'community': None, 'kind': None}
+        results = cache.search(query, limit=5, modifiers=modifiers, config={})
+        assert len(results) > 0
 
 
 # =============================================================================
