@@ -4,13 +4,17 @@ Flexsearch Vector Cache
 Matrix-based semantic search. Trades memory for speed.
 Loads all vectors once, queries in <1ms via BLAS matmul.
 
-Three numpy-only operations that SQL cannot do:
-- Matrix multiply (corpus-wide cosine similarity in 0.012ms)
+Landscape modulations (applied on full N array before top-k):
+- Matrix multiply (corpus-wide cosine similarity)
+- Hub boost: scores *= (1 + weight * centrality)
+- Temporal decay: scores *= 1 / (1 + days_ago / half_life)
 - Contrastive (second matmul against negative query)
 - MMR diversity (iterative pairwise selection)
 
-Everything else (graph boost, temporal decay, metadata filter)
-is SQL arithmetic on the candidate rows vec_search returns.
+SQL usage:
+    vec_search('_raw_chunks', 'auth')                    -- raw cosine
+    vec_search('_raw_chunks', 'auth', 'hubs')            -- hub boost
+    vec_search('_raw_chunks', 'auth', 'hubs recent:7 diverse unlike:jwt')
 
 Performance:
     1k docs:   0.1ms
@@ -23,9 +27,60 @@ Memory: ~15MB per 10k docs (384-dim vectors)
 
 import json
 import re
+import time
 
 import numpy as np
 from typing import Optional, List, Dict, Any
+
+
+def parse_modifiers(modifier_str: str) -> dict:
+    """Parse a modifier string into modulation parameters.
+
+    Tokens (space-separated, composable):
+        hubs            hub boost by centrality
+        recent          temporal decay (cell-configured half-life)
+        recent:N        temporal decay with N-day half-life
+        unlike:TEXT     contrastive — demote similarity to TEXT
+        diverse         MMR diversity selection
+        limit:N         override default candidate limit
+
+    Returns dict with keys: hubs, recent, recent_days, unlike, diverse, limit.
+    Unknown tokens silently ignored (forward-compatible).
+    """
+    result = {
+        'hubs': False,
+        'recent': False,
+        'recent_days': None,
+        'unlike': None,
+        'diverse': False,
+        'limit': None,
+    }
+
+    if not modifier_str:
+        return result
+
+    for token in modifier_str.strip().split():
+        if token == 'hubs':
+            result['hubs'] = True
+        elif token == 'diverse':
+            result['diverse'] = True
+        elif token == 'recent':
+            result['recent'] = True
+        elif token.startswith('recent:'):
+            result['recent'] = True
+            try:
+                result['recent_days'] = int(token.split(':', 1)[1])
+            except ValueError:
+                result['recent_days'] = None
+        elif token.startswith('unlike:'):
+            result['unlike'] = token.split(':', 1)[1]
+        elif token.startswith('limit:'):
+            try:
+                result['limit'] = int(token.split(':', 1)[1])
+            except ValueError:
+                pass
+
+    return result
 
 
 class VectorCache:
@@ -48,6 +103,10 @@ class VectorCache:
         self._id_to_idx: Dict[str, int] = {}
         self.loaded_at: Optional[float] = None
         self.dims: int = 0
+        # Column arrays for landscape modulation (N,), aligned with self.ids
+        self.centrality: Optional[np.ndarray] = None   # (N,) float32, 0-1 normalized
+        self.timestamps: Optional[np.ndarray] = None    # (N,) float64, epoch seconds
+        self.is_hub: Optional[np.ndarray] = None        # (N,) bool
 
     def load_from_db(self, db, table: str, embedding_col: str = 'embedding',
                      id_col: str = 'id') -> 'VectorCache':
@@ -96,16 +155,74 @@ class VectorCache:
 
         return self
 
+    def load_columns(self, db, table: str, id_col: str = 'id'):
+        """Load modulation column arrays from DB, aligned with self.ids.
+
+        Loads centrality (min-max normalized to 0-1) and timestamps for each
+        vector in the cache. Sources without graph data get centrality=0.
+        Chunks without timestamps get timestamp=0.
+
+        Must be called AFTER load_from_db().
+        """
+        if not self.ids:
+            return
+
+        N = len(self.ids)
+
+        # --- Timestamps: direct from table ---
+        self.timestamps = np.zeros(N, dtype=np.float64)
+        try:
+            rows = db.execute(
+                f"SELECT [{id_col}], timestamp FROM [{table}] "
+                f"WHERE timestamp IS NOT NULL"
+            ).fetchall()
+            for row in rows:
+                idx = self._id_to_idx.get(row[0])
+                if idx is not None:
+                    self.timestamps[idx] = float(row[1])
+        except Exception:
+            pass  # table has no timestamp column
+
+        # --- Centrality + is_hub: chunk -> source -> graph ---
+        raw_centrality = np.zeros(N, dtype=np.float32)
+        self.is_hub = np.zeros(N, dtype=bool)
+
+        try:
+            rows = db.execute("""
+                SELECT e.chunk_id, g.centrality, g.is_hub
+                FROM _edges_source e
+                JOIN _enrich_source_graph g ON e.source_id = g.source_id
+            """).fetchall()
+            for row in rows:
+                idx = self._id_to_idx.get(row[0])
+                if idx is not None:
+                    raw_centrality[idx] = float(row[1]) if row[1] else 0.0
+                    self.is_hub[idx] = bool(row[2])
+        except Exception:
+            pass  # _edges_source or _enrich_source_graph missing
+
+        # Min-max normalize centrality to 0-1
+        cmin, cmax = float(raw_centrality.min()), float(raw_centrality.max())
+        if cmax > cmin:
+            self.centrality = (raw_centrality - cmin) / (cmax - cmin)
+        else:
+            self.centrality = np.zeros(N, dtype=np.float32)
+
     def search(self, query_vec: np.ndarray, *, not_like_vec: np.ndarray = None,
                diverse: bool = False, limit: int = 10, oversample: int = 200,
                mask: np.ndarray = None, threshold: float = 0.0,
-               mmr_lambda: float = 0.7) -> List[Dict[str, Any]]:
+               mmr_lambda: float = 0.7,
+               modifiers: dict = None, config: dict = None,
+               embed_fn=None) -> List[Dict[str, Any]]:
         """
-        Search for similar vectors. The three numpy-only operations:
+        Search for similar vectors with optional landscape modulations.
 
+        Landscape modulations (applied on full N array before top-k):
         1. Matrix multiply: corpus-wide cosine similarity
-        2. Contrastive (not_like_vec): penalize similarity to negative query
-        3. MMR diversity: iterative selection maximizing relevance - redundancy
+        2. Hub boost: scores *= (1 + weight * centrality)
+        3. Temporal decay: scores *= 1 / (1 + days_ago / half_life)
+        4. Contrastive (not_like_vec): penalize similarity to negative query
+        5. MMR diversity: iterative selection maximizing relevance - redundancy
 
         Args:
             query_vec: Query embedding (dims,)
@@ -115,7 +232,10 @@ class VectorCache:
             oversample: Candidate pool size for diversity/contrastive
             mask: Boolean mask (n,) - True = include in search
             threshold: Minimum cosine similarity cutoff
-            mmr_lambda: Relevance vs diversity tradeoff (0-1). Higher = more relevant, lower = more diverse.
+            mmr_lambda: Relevance vs diversity tradeoff (0-1)
+            modifiers: Parsed modifier dict from parse_modifiers()
+            config: Cell config dict from _meta (vec:* keys)
+            embed_fn: Embedding function for unlike:TEXT in modifiers
 
         Returns:
             List of {id, score} sorted by score desc
@@ -138,6 +258,37 @@ class VectorCache:
 
         # 1. Matrix multiply — all similarities at once
         similarities = self.matrix @ query_vec
+
+        # === LANDSCAPE MODULATIONS (full N array, before candidate selection) ===
+        if modifiers:
+            cfg = config or {}
+
+            # Hub boost: scores *= (1 + weight * normalized_centrality)
+            if modifiers.get('hubs') and self.centrality is not None:
+                weight = float(cfg.get('vec:hubs:weight', 1.3))
+                similarities = similarities * (1.0 + weight * self.centrality)
+
+            # Temporal decay: scores *= 1 / (1 + days_ago / half_life)
+            if modifiers.get('recent') and self.timestamps is not None:
+                if np.any(self.timestamps > 0):
+                    half_life = float(
+                        modifiers.get('recent_days')
+                        or cfg.get('vec:recent:half_life', 30)
+                    )
+                    days_ago = np.maximum(
+                        (time.time() - self.timestamps) / 86400.0, 0.0
+                    )
+                    similarities = similarities * (1.0 / (1.0 + days_ago / half_life))
+
+            # Contrastive from modifier string
+            if modifiers.get('unlike') and embed_fn is not None:
+                not_like_vec = np.squeeze(embed_fn(modifiers['unlike']))
+
+            # Override diverse/limit from modifiers
+            if modifiers.get('diverse'):
+                diverse = True
+            if modifiers.get('limit'):
+                limit = modifiers['limit']
 
         # Apply mask
         if mask is not None:
@@ -333,40 +484,40 @@ def materialize_vec_search(db, sql: str) -> str:
     return sql[:start.start()] + "_vec_results" + sql[end_pos:]
 
 
-def register_vec_search(conn, caches: dict, embed_fn):
-    """Register vec_search as a SQL-callable function.
-
-    Multi-cache registry: one VectorCache per table.
+def register_vec_search(conn, caches: dict, embed_fn, cell_config: dict = None):
+    """Register vec_search as a SQL-callable function with modifier support.
 
     Args:
         conn: SQLite connection
-        caches: {table_name: VectorCache} e.g. {'_raw_chunks': cache1, '_raw_sources': cache2}
+        caches: {table_name: VectorCache}
         embed_fn: callable(text) -> np.ndarray (384d)
+        cell_config: dict of vec:* keys from _meta (optional)
 
-    SQL usage (natural — MCP/CLI materialize automatically):
-        SELECT v.id, v.score, m.content
-        FROM vec_search('_raw_chunks', 'authentication') v
-        JOIN messages m ON v.id = m.id
-        ORDER BY v.score DESC LIMIT 10;
-
-        -- With contrastive:
-        SELECT v.id, v.score FROM vec_search('_raw_chunks', 'caching', 'NOT kubernetes') v;
-
-        -- Explicit json_each still works (backward compat):
-        SELECT * FROM json_each(vec_search('_raw_chunks', 'auth', NULL, 1));
+    SQL usage:
+        vec_search('_raw_chunks', 'auth')                              -- raw cosine
+        vec_search('_raw_chunks', 'auth', 'hubs')                      -- hub boost
+        vec_search('_raw_chunks', 'auth', 'hubs recent:7 diverse unlike:jwt')
     """
     import json
+    cfg = cell_config or {}
 
-    def vec_search_fn(table, query_text, unlike=None, diverse=0, limit=200):
+    def vec_search_fn(table, query_text, modifier_str=None):
         cache = caches.get(table)
         if cache is None or cache.matrix is None:
             return json.dumps([])
         query_vec = np.squeeze(embed_fn(query_text))
-        not_like_vec = np.squeeze(embed_fn(unlike)) if unlike else None
+        modifiers = parse_modifiers(modifier_str) if modifier_str else None
+
+        limit = 200
+        if modifiers and modifiers.get('limit'):
+            limit = modifiers['limit']
+
         results = cache.search(
             query_vec,
-            not_like_vec=not_like_vec,
-            diverse=bool(diverse),
+            modifiers=modifiers,
+            config=cfg,
+            embed_fn=embed_fn,
+            diverse=bool(modifiers.get('diverse')) if modifiers else False,
             limit=limit,
             oversample=min(limit * 3, cache.size),
         )

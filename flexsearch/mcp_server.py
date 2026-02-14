@@ -56,6 +56,24 @@ def load_cells(cell_names: list[str]) -> dict:
     return cells
 
 
+def _read_vec_config(db) -> dict:
+    """Read vec:* keys from _meta for modulation config.
+
+    Returns dict of all _meta keys starting with 'vec:'.
+    Example: {'vec:hubs:weight': '1.3', 'vec:recent:half_life': '30'}
+    """
+    config = {}
+    try:
+        rows = db.execute(
+            "SELECT key, value FROM _meta WHERE key LIKE 'vec:%'"
+        ).fetchall()
+        for row in rows:
+            config[row[0]] = row[1]
+    except Exception:
+        pass
+    return config
+
+
 def warm_caches(cells: dict) -> dict:
     """Load VectorCaches for all cells. Returns {name: {table: cache}}."""
     try:
@@ -74,11 +92,13 @@ def warm_caches(cells: dict) -> dict:
                 cache = VectorCache()
                 cache.load_from_db(db, table, 'embedding', id_col)
                 if cache.size > 0:
+                    cache.load_columns(db, table, id_col)
                     caches[table] = cache
             except Exception:
                 pass
         if caches:
-            register_vec_search(db, caches, embedder.encode)
+            cell_config = _read_vec_config(db)
+            register_vec_search(db, caches, embedder.encode, cell_config)
             all_caches[name] = caches
     return all_caches
 
@@ -164,11 +184,21 @@ def build_instructions() -> str:
         "  JOIN messages m ON v.id = m.id",
         "  ORDER BY v.score DESC LIMIT 10",
         "",
+        "  Modifiers (3rd arg, space-separated, composable):",
+        "    hubs            boost hub sources by centrality",
+        "    recent          temporal decay (cell-configured half-life)",
+        "    recent:N        temporal decay with N-day half-life",
+        "    unlike:TEXT     contrastive — demote similarity to TEXT",
+        "    diverse         MMR diversity selection",
+        "    limit:N         override default limit (200)",
+        "",
+        "  No modifiers = raw cosine similarity.",
+        "  vec_search('_raw_chunks', 'auth', 'hubs recent:7 diverse')",
+        "",
         "HYBRID (FTS + semantic + graph):",
         "  vec_search('_raw_chunks', 'query')                    # Semantic candidates",
         "  chunks_fts MATCH 'keyword'                             # FTS keyword search",
         "  WHERE is_hub = 1 ORDER BY centrality DESC              # Graph intelligence",
-        "  * (1 + centrality) in ORDER BY                         # Graph boost",
         "",
         "PRESETS (pass @name instead of SQL — batched multi-query, saves round trips):",
         "  @introspect                        # Full cell orientation (always available)",
