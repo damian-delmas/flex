@@ -14,6 +14,8 @@ Usage:
 import json
 import sqlite3
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -267,6 +269,30 @@ def build_instructions() -> str:
 mcp = FastMCP(name="flexsearch")
 
 
+def _log_query(cell: str, query: str, result_json: str, elapsed_ms: float):
+    """Append query to cell's history JSONL. Fire-and-forget."""
+    try:
+        history_path = CELLS_ROOT / cell / "flexsearch-history.jsonl"
+        parsed = json.loads(result_json)
+        if isinstance(parsed, list):
+            result_count = len(parsed)
+        elif isinstance(parsed, dict) and 'error' in parsed:
+            result_count = -1
+        else:
+            result_count = 0
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "cell": cell,
+            "query": query,
+            "result_count": result_count,
+            "elapsed_ms": round(elapsed_ms, 1),
+        }
+        with open(history_path, 'a') as f:
+            f.write(json.dumps(entry, default=str) + '\n')
+    except Exception:
+        pass  # never break queries for logging
+
+
 @mcp.tool()
 def flexsearch(query: str, cell: str = "thread") -> str:
     """
@@ -280,7 +306,11 @@ def flexsearch(query: str, cell: str = "thread") -> str:
         available = list(_cells.keys())
         return json.dumps({"error": f"Unknown cell: {cell}", "available": available})
 
-    return execute_query(_cells[cell], query)
+    start = time.monotonic()
+    result = execute_query(_cells[cell], query)
+    elapsed_ms = (time.monotonic() - start) * 1000
+    _log_query(cell, query, result, elapsed_ms)
+    return result
 
 
 # ============================================================
