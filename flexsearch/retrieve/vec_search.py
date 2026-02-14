@@ -194,17 +194,19 @@ class VectorCache:
 
         N = len(self.ids)
 
-        # --- Timestamps: direct from table ---
+        # --- Timestamps: direct from table (if column exists) ---
         self.timestamps = np.zeros(N, dtype=np.float64)
         try:
-            rows = db.execute(
-                f"SELECT [{id_col}], timestamp FROM [{table}] "
-                f"WHERE timestamp IS NOT NULL"
-            ).fetchall()
-            for row in rows:
-                idx = self._id_to_idx.get(row[0])
-                if idx is not None:
-                    self.timestamps[idx] = float(row[1])
+            cols = {r[1] for r in db.execute(f"PRAGMA table_info([{table}])").fetchall()}
+            if 'timestamp' in cols:
+                rows = db.execute(
+                    f"SELECT [{id_col}], timestamp FROM [{table}] "
+                    f"WHERE timestamp IS NOT NULL"
+                ).fetchall()
+                for row in rows:
+                    idx = self._id_to_idx.get(row[0])
+                    if idx is not None:
+                        self.timestamps[idx] = float(row[1])
         except Exception as e:
             print(f"VectorCache: timestamps load failed: {e}", file=sys.stderr)
 

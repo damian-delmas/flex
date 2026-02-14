@@ -27,35 +27,88 @@ from flexsearch.core import open_cell, get_meta
 # ============================================================
 
 CELLS_ROOT = Path.home() / ".qmem/cells/projects"
-DEFAULT_CELLS = ['thread', 'claude', 'qmem', 'inventory', 'thread-codebase', 'flexsearch-context', 'axpstack-context']
 
 # ============================================================
 # Cell Management
 # ============================================================
 
-_cells: dict[str, sqlite3.Connection] = {}
-_caches: dict = {}
+# VectorCache state — long-lived numpy matrices, independent of connections.
+# {cell_name: {'caches': {table: VectorCache}, 'config': dict, 'mtime': float}}
+_vec_state: dict = {}
+
+# Known cells (just names, for instructions). Populated at startup + lazily.
+_known_cells: set[str] = set()
 
 
-def resolve_cell(name: str) -> Path:
-    """Resolve cell name to db path."""
-    db_path = CELLS_ROOT / name / "main.db"
-    if not db_path.exists():
-        raise FileNotFoundError(f"Cell not found: {db_path}")
-    return db_path
+def discover_cells() -> list[str]:
+    """Scan CELLS_ROOT for directories containing main.db."""
+    if not CELLS_ROOT.exists():
+        return []
+    return sorted(
+        d.name for d in CELLS_ROOT.iterdir()
+        if d.is_dir() and (d / "main.db").exists()
+    )
 
 
-def load_cells(cell_names: list[str]) -> dict:
-    """Load cell connections. Returns {name: connection}."""
-    cells = {}
-    for name in cell_names:
+def _db_path(name: str) -> Path:
+    return CELLS_ROOT / name / "main.db"
+
+
+def _db_mtime(name: str) -> float:
+    """Get mtime of cell db file. Returns 0 if missing."""
+    p = _db_path(name)
+    return p.stat().st_mtime if p.exists() else 0
+
+
+def get_cell(name: str) -> sqlite3.Connection | None:
+    """Open a fresh connection to a cell. Registers vec_search UDF if cached.
+
+    Returns None if cell doesn't exist on disk.
+    Fresh connection every call = always see latest data.
+    """
+    p = _db_path(name)
+    if not p.exists():
+        return None
+
+    db = open_cell(str(p))
+    is_new = name not in _known_cells
+    _known_cells.add(name)
+
+    # Rebuild instructions when a new cell is discovered lazily
+    if is_new:
         try:
-            db_path = resolve_cell(name)
-            cells[name] = open_cell(str(db_path))
-            print(f"[flexsearch-mcp]   {name}: ok", file=sys.stderr)
-        except Exception as e:
-            print(f"[flexsearch-mcp]   {name}: {e}", file=sys.stderr)
-    return cells
+            mcp._mcp_server.instructions = build_instructions()
+        except Exception:
+            pass  # server may not be initialized yet during startup
+
+    # Check if VectorCache needs warming or refreshing
+    current_mtime = p.stat().st_mtime
+    state = _vec_state.get(name)
+
+    if state and state['mtime'] == current_mtime:
+        # Cache is fresh — just register UDF on this connection
+        _register_udf(db, state)
+    elif not _no_embed:
+        # Cache missing or stale — rebuild
+        new_state = _build_vec_state(name, db)
+        if new_state:
+            _vec_state[name] = new_state
+            _register_udf(db, new_state)
+            print(f"[flexsearch-mcp]   {name}: vec_cache {'refreshed' if state else 'warmed'}"
+                  f" ({list(new_state['caches'].keys())})", file=sys.stderr)
+
+    return db
+
+
+def _register_udf(db: sqlite3.Connection, state: dict):
+    """Register vec_search UDF on a connection using cached VectorCache."""
+    try:
+        from flexsearch.retrieve.vec_search import register_vec_search
+        embedder = _get_embedder()
+        if embedder:
+            register_vec_search(db, state['caches'], embedder.encode, state['config'])
+    except ImportError:
+        pass
 
 
 def _read_vec_config(db) -> dict:
@@ -76,33 +129,60 @@ def _read_vec_config(db) -> dict:
     return config
 
 
-def warm_caches(cells: dict) -> dict:
-    """Load VectorCaches for all cells. Returns {name: {table: cache}}."""
+_embedder = None
+_no_embed = False
+
+
+def _get_embedder():
+    """Lazy-load embedder singleton."""
+    global _embedder
+    if _embedder is not None:
+        return _embedder
+    if _no_embed:
+        return None
     try:
-        from flexsearch.retrieve.vec_search import VectorCache, register_vec_search
         from flexsearch.onnx import get_model
-        embedder = get_model()
+        _embedder = get_model()
+        return _embedder
     except ImportError:
         print("[flexsearch-mcp] Embedding not available (onnx/transformers missing)", file=sys.stderr)
-        return {}
+        return None
 
-    all_caches = {}
-    for name, db in cells.items():
-        caches = {}
-        for table, id_col in [('_raw_chunks', 'id'), ('_raw_sources', 'source_id')]:
-            try:
-                cache = VectorCache()
-                cache.load_from_db(db, table, 'embedding', id_col)
-                if cache.size > 0:
-                    cache.load_columns(db, table, id_col)
-                    caches[table] = cache
-            except Exception:
-                pass
-        if caches:
-            cell_config = _read_vec_config(db)
-            register_vec_search(db, caches, embedder.encode, cell_config)
-            all_caches[name] = caches
-    return all_caches
+
+def _build_vec_state(name: str, db: sqlite3.Connection) -> dict | None:
+    """Build VectorCache state for a cell. Returns state dict or None."""
+    try:
+        from flexsearch.retrieve.vec_search import VectorCache
+    except ImportError:
+        return None
+
+    caches = {}
+    for table, id_col in [('_raw_chunks', 'id'), ('_raw_sources', 'source_id')]:
+        try:
+            cache = VectorCache()
+            cache.load_from_db(db, table, 'embedding', id_col)
+            if cache.size > 0:
+                cache.load_columns(db, table, id_col)
+                caches[table] = cache
+        except Exception:
+            pass
+
+    if not caches:
+        return None
+
+    return {
+        'caches': caches,
+        'config': _read_vec_config(db),
+        'mtime': _db_mtime(name),
+    }
+
+
+def warm_all(cell_names: list[str]):
+    """Pre-warm VectorCaches for all cells at startup."""
+    for name in cell_names:
+        db = get_cell(name)
+        if db:
+            db.close()  # just warming the cache, don't hold connections
 
 
 def execute_preset(db: sqlite3.Connection, query: str) -> str:
@@ -214,9 +294,17 @@ def build_instructions() -> str:
         "",
         "CELLS:",
     ]
-    for name, db in _cells.items():
-        desc = get_meta(db, 'description') or f"Cell: {name}"
-        parts.append(f"  {name}: {desc}")
+    # Open fresh connections to read descriptions, then close
+    first_db = None
+    for name in sorted(_known_cells):
+        db = get_cell(name)
+        if db:
+            desc = get_meta(db, 'description') or f"Cell: {name}"
+            parts.append(f"  {name}: {desc}")
+            if first_db is None:
+                first_db = db
+            else:
+                db.close()
 
     parts.extend([
         "",
@@ -229,9 +317,9 @@ def build_instructions() -> str:
     ])
 
     # Build retrieval section from first cell that has keys (all cells share the model)
-    for db in _cells.values():
-        parts.extend(_build_retrieval_instructions(db))
-        break
+    if first_db:
+        parts.extend(_build_retrieval_instructions(first_db))
+        first_db.close()
     parts.append("")
 
     parts.extend([
@@ -303,15 +391,23 @@ def flexsearch(query: str, cell: str = "thread") -> str:
         query: SQL query string
         cell: Cell name (thread, claude, qmem, inventory, thread-codebase)
     """
-    if cell not in _cells:
-        available = list(_cells.keys())
-        return json.dumps({"error": f"Unknown cell: {cell}", "available": available})
+    db = get_cell(cell)
+    if db is None:
+        available = sorted(_known_cells)
+        on_disk = set(discover_cells()) - set(available)
+        msg = {"error": f"Unknown cell: {cell}", "available": available}
+        if on_disk:
+            msg["also_on_disk"] = sorted(on_disk)
+        return json.dumps(msg)
 
-    start = time.monotonic()
-    result = execute_query(_cells[cell], query)
-    elapsed_ms = (time.monotonic() - start) * 1000
-    _log_query(cell, query, result, elapsed_ms)
-    return result
+    try:
+        start = time.monotonic()
+        result = execute_query(db, query)
+        elapsed_ms = (time.monotonic() - start) * 1000
+        _log_query(cell, query, result, elapsed_ms)
+        return result
+    finally:
+        db.close()
 
 
 # ============================================================
@@ -340,8 +436,9 @@ def run_http_server(port: int = 8080):
     async def health(request: Request) -> JSONResponse:
         return JSONResponse({
             "status": "ok",
-            "cells": list(_cells.keys()),
-            "caches": {k: list(v.keys()) for k, v in _caches.items()} if _caches else {}
+            "cells": sorted(_known_cells),
+            "on_disk": discover_cells(),
+            "vec_cached": {k: list(v['caches'].keys()) for k, v in _vec_state.items()},
         })
 
     app = Starlette(
@@ -363,7 +460,6 @@ def run_http_server(port: int = 8080):
 
 def main():
     import argparse
-    global _cells, _caches
 
     parser = argparse.ArgumentParser(description="Flexsearch MCP server")
     parser.add_argument("--cell", action="append", default=[],
@@ -376,28 +472,40 @@ def main():
                         help="HTTP port (default: 8080)")
     args = parser.parse_args()
 
-    cell_names = args.cell or DEFAULT_CELLS
+    global _no_embed
+    _no_embed = args.no_embed
 
-    # Load cells
-    print(f"[flexsearch-mcp] Loading cells...", file=sys.stderr)
-    _cells = load_cells(cell_names)
-    print(f"[flexsearch-mcp] {len(_cells)} cells loaded", file=sys.stderr)
+    # Discover cells: --cell flags override, otherwise scan filesystem
+    if args.cell:
+        cell_names = args.cell
+    else:
+        cell_names = discover_cells()
+        print(f"[flexsearch-mcp] Discovered {len(cell_names)} cells: {cell_names}", file=sys.stderr)
 
-    # Update instructions with loaded cells
-    mcp._mcp_server.instructions = build_instructions()
+    _known_cells.update(cell_names)
 
-    # Warm caches
-    if not args.no_embed:
+    # Pre-warm VectorCaches (connections are ephemeral, caches persist)
+    if not _no_embed:
         print(f"[flexsearch-mcp] Warming VectorCaches...", file=sys.stderr)
-        _caches = warm_caches(_cells)
-        if _caches:
-            for name, c in _caches.items():
-                tables = list(c.keys())
-                print(f"[flexsearch-mcp]   {name}: {tables}", file=sys.stderr)
+        warm_all(cell_names)
     else:
         print("[flexsearch-mcp] Skipping embeddings", file=sys.stderr)
 
-    print(f"[flexsearch-mcp] Ready", file=sys.stderr)
+    # Build instructions from cell metadata
+    mcp._mcp_server.instructions = build_instructions()
+
+    # Dynamic tool description — inject discovered cell names into docstring
+    cell_list = ', '.join(sorted(_known_cells))
+    tool = mcp._tool_manager._tools.get('flexsearch')
+    if tool:
+        tool.description = (
+            f"Execute read-only SQL on a knowledge cell.\n\n"
+            f"Args:\n"
+            f"    query: SQL query string\n"
+            f"    cell: Cell name ({cell_list})"
+        )
+
+    print(f"[flexsearch-mcp] Ready — {len(_known_cells)} cells, {len(_vec_state)} cached", file=sys.stderr)
 
     if args.http:
         run_http_server(args.port)
