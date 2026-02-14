@@ -44,13 +44,13 @@ FOLDER_MAP = {
     'changes/tracking': ('past',      'tracking'),
     'changes/audits':   ('past',      'audit'),
     'changes/review':   ('past',      'review'),
-    'changes/design':   ('future',    'design'),     # NOTE: future, not past
     'changes/session':  ('past',      'session'),
     'current/ast':      ('present',   'ast'),
     'current':          ('present',   'architecture'),
-    'intended/proximate': ('future',  'plan'),
+    'intended/design':    ('future',  'design'),
+    'intended/proximate': ('future',  'vision'),
     'intended/ultimate':  ('future',  'vision'),
-    'intended':         ('future',    'plan'),        # fallback
+    'intended':         ('future',    'vision'),      # fallback
     'knowledge':        ('exogenous', 'knowledge'),
     'philosophy':       ('exogenous', 'philosophy'),
     'onboard':          ('present',   'onboard'),
@@ -58,6 +58,7 @@ FOLDER_MAP = {
     'reference':        ('present',   'reference'),
     'specs':            ('future',    'spec'),
     'slots':            ('future',    'slot'),
+    'shapes':           ('future',    'shape'),
     'plans':            ('future',    'plan'),
 }
 
@@ -134,6 +135,30 @@ def parse_docpac(root, pattern: str = '**/*.md') -> list[DocPacEntry]:
     return entries
 
 
+def parse_docpac_file(filepath, root) -> DocPacEntry:
+    """
+    Classify a single file without walking the corpus.
+
+    Same logic as parse_docpac but O(depth) instead of O(N).
+    Used by the live index worker for incremental updates.
+    """
+    filepath = Path(filepath)
+    root = Path(root)
+
+    if _in_skip_folder(filepath, root):
+        return DocPacEntry(
+            path=str(filepath), temporal=None, doc_type='skip',
+            title=_extract_title(filepath.name), skip=True)
+
+    boundary = _find_boundary(filepath, root)
+    temporal, doc_type = _infer_from_path(filepath, boundary)
+    file_date = _extract_file_date(filepath.name)
+
+    return DocPacEntry(
+        path=str(filepath), temporal=temporal, doc_type=doc_type,
+        title=_extract_title(filepath.name), file_date=file_date)
+
+
 def _in_skip_folder(filepath: Path, root: Path) -> bool:
     """Check if file is under a skip folder."""
     try:
@@ -186,7 +211,10 @@ def _infer_from_path(filepath: Path, boundary: Path) -> tuple[Optional[str], Opt
     """
     Infer (temporal, doc_type) from folder path relative to boundary.
 
-    Uses specificity rule: longest matching key wins.
+    Uses deepest-match rule: the match closest to the file wins.
+    This respects recursive doc-pac nesting — a slots/ folder inside
+    a plans/ folder resolves as 'slot', not 'plan'.
+
     Resolution is relative to the boundary, not the top-level root.
     """
     try:
@@ -200,15 +228,24 @@ def _infer_from_path(filepath: Path, boundary: Path) -> tuple[Optional[str], Opt
         return None, None
 
     folder_path = '/'.join(folder_parts).lower()
+    path_parts = folder_path.split('/')
+
+    # Find all matches, keep the deepest (rightmost / closest to file)
+    best_match = None
+    best_position = -1
 
     for key in _SORTED_KEYS:
-        # Segment-based matching: key parts must align with folder boundaries
-        # e.g. 'changes/code' must match path segments, not substrings
         key_parts = key.split('/')
-        path_parts = folder_path.split('/')
         for i in range(len(path_parts) - len(key_parts) + 1):
             if path_parts[i:i + len(key_parts)] == key_parts:
-                return FOLDER_MAP[key]
+                match_end = i + len(key_parts)
+                if match_end > best_position or (match_end == best_position and len(key_parts) > len(best_match.split('/'))):
+                    best_match = key
+                    best_position = match_end
+                break  # only need first occurrence per key
+
+    if best_match:
+        return FOLDER_MAP[best_match]
 
     return None, None
 
