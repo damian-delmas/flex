@@ -29,6 +29,7 @@ Memory: ~15MB per 10k docs (384-dim vectors)
 
 import json
 import re
+import sys
 import time
 
 import numpy as np
@@ -197,8 +198,8 @@ class VectorCache:
                 idx = self._id_to_idx.get(row[0])
                 if idx is not None:
                     self.timestamps[idx] = float(row[1])
-        except Exception:
-            pass  # table has no timestamp column
+        except Exception as e:
+            print(f"VectorCache: timestamps load failed: {e}", file=sys.stderr)
 
         # --- Graph columns: centrality, is_hub, community_id (single query) ---
         raw_centrality = np.zeros(N, dtype=np.float32)
@@ -218,8 +219,8 @@ class VectorCache:
                     self.is_hub[idx] = bool(row[2])
                     if row[3] is not None:
                         self.community_ids[idx] = int(row[3])
-        except Exception:
-            pass  # _edges_source or _enrich_source_graph missing
+        except Exception as e:
+            print(f"VectorCache: graph columns load failed: {e}", file=sys.stderr)
 
         # Min-max normalize centrality to 0-1
         cmin, cmax = float(raw_centrality.min()), float(raw_centrality.max())
@@ -241,8 +242,8 @@ class VectorCache:
                 idx = self._id_to_idx.get(row[0])
                 if idx is not None:
                     self.kinds[idx] = row[1]
-        except Exception:
-            pass  # no types data
+        except Exception as e:
+            print(f"VectorCache: kinds load failed: {e}", file=sys.stderr)
 
     def search(self, query_vec: np.ndarray, *, not_like_vec: np.ndarray = None,
                diverse: bool = False, limit: int = 10, oversample: int = 200,
@@ -548,6 +549,23 @@ def register_vec_search(conn, caches: dict, embed_fn, cell_config: dict = None):
         cache = caches.get(table)
         if cache is None or cache.matrix is None:
             return json.dumps([])
+
+        # Diagnostic mode: return cache state
+        if query_text == '__diag__':
+            unique_kinds = set(cache.kinds[:50].tolist()) if cache.kinds is not None else None
+            n_kinds_set = int((cache.kinds != '').sum()) if cache.kinds is not None else 0
+            n_comm_set = int((cache.community_ids != -1).sum()) if cache.community_ids is not None else 0
+            return json.dumps({
+                'size': cache.size,
+                'has_kinds': cache.kinds is not None,
+                'kinds_populated': n_kinds_set,
+                'kinds_sample': list(unique_kinds) if unique_kinds else None,
+                'has_community_ids': cache.community_ids is not None,
+                'community_ids_populated': n_comm_set,
+                'has_centrality': cache.centrality is not None,
+                'has_timestamps': cache.timestamps is not None,
+            })
+
         query_vec = np.squeeze(embed_fn(query_text))
         modifiers = parse_modifiers(modifier_str) if modifier_str else None
 

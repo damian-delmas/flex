@@ -20,7 +20,7 @@ from flexsearch.views import regenerate_views  # noqa: F401
 
 def open_cell(db_path: str) -> sqlite3.Connection:
     """Open a cell database with optimized settings."""
-    db = sqlite3.connect(db_path, check_same_thread=False)
+    db = sqlite3.connect(db_path, check_same_thread=False, timeout=10)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA synchronous=NORMAL")
     db.execute("PRAGMA cache_size=-20000")
