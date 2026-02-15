@@ -25,6 +25,13 @@ SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '_edges_%' ORDER
 -- @query: enrich_tables
 SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '_enrich_%' ORDER BY name;
 
+-- @query: view_schemas
+SELECT m.name as view_name, GROUP_CONCAT(p.name, ', ') as columns
+FROM sqlite_master m, pragma_table_info(m.name) p
+WHERE m.type = 'view'
+GROUP BY m.name
+ORDER BY m.name;
+
 -- @query: hubs
 SELECT g.source_id, src.title,
     ROUND(g.centrality, 4) as centrality, g.community_id
