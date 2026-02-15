@@ -351,8 +351,11 @@ def build_instructions() -> str:
 
     parts.extend([
         "SEMANTIC SEARCH:",
+        "  CRITICAL: vec_search is a SQL table function, not a standalone command.",
+        "  Always use it inside SELECT ... FROM:",
+        "",
         "  SELECT v.id, v.score, m.content",
-        "  FROM vec_search('_raw_chunks', 'your query') v",
+        "  FROM vec_search('_raw_chunks', 'your query', 'diverse') v",
         "  JOIN messages m ON v.id = m.id",
         "  ORDER BY v.score DESC LIMIT 10",
         "",
