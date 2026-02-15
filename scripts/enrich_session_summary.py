@@ -1,23 +1,21 @@
 """Session Summary Enrichment — Embedding-relative topic extraction.
 
-For each meaningful session (message_count >= 5, not agent, not warmup):
-  - HDBSCAN on chunk embeddings → topic clusters with percentages
+For each meaningful session (filtered by module noise config):
+  - HDBSCAN on chunk embeddings -> topic clusters with percentages
   - Labels from centroid-adjacent chunks (files > actions > kinds > content)
   - Community label from hub sessions in same community
 
-Output: _enrich_session_summary table (source_id PK → auto-JOINs sessions view)
+Output: _enrich_session_summary table (source_id PK -> auto-JOINs sessions view)
 """
 
 import json
-import os
 import sys
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import hdbscan
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -28,15 +26,15 @@ sys.path.insert(0, str(FLEX_ROOT))
 from flexsearch.core import open_cell
 from flexsearch.views import regenerate_views
 
+# Module imports — all claude-code-specific config lives here
+from flexsearch.modules.claude_code.manage.noise import session_filter_sql
+from flexsearch.modules.claude_code.manage.summary import (
+    HDBSCAN_MIN_CHUNKS, HDBSCAN_MIN_CLUSTER_SIZE, HDBSCAN_MIN_SAMPLES,
+    HDBSCAN_METRIC, label_cluster, short_session_label,
+)
+
 CELLS_ROOT = Path.home() / '.qmem' / 'cells' / 'projects'
 THREAD_DB = CELLS_ROOT / 'thread' / 'main.db'
-
-SESSION_FILTER = """
-    SELECT source_id FROM _raw_sources
-    WHERE message_count >= 5
-      AND source_id NOT LIKE 'agent-%'
-      AND (title IS NULL OR title != 'Warmup')
-"""
 
 CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS _enrich_session_summary (
@@ -46,39 +44,6 @@ CREATE TABLE IF NOT EXISTS _enrich_session_summary (
     topic_summary TEXT
 )
 """
-
-# Full action map covering all tool_name values
-ACTION_MAP = {
-    'Bash': 'shell',
-    'Read': 'reading',
-    'Write': 'writing',
-    'Edit': 'editing',
-    'Grep': 'search',
-    'Glob': 'search',
-    'Task': 'delegation',
-    'TodoWrite': 'planning',
-    'TaskCreate': 'planning',
-    'TaskUpdate': 'planning',
-    'TaskOutput': 'delegation',
-    'BashOutput': 'shell',
-    'WebFetch': 'web research',
-    'WebSearch': 'web research',
-    'Skill': 'skill invocation',
-    'ExitPlanMode': 'planning',
-    'UserPrompt': 'conversation',
-}
-
-# kind (semantic_role) → human label
-KIND_MAP = {
-    'prompt': 'conversation',
-    'response': 'conversation',
-    'command': 'shell',
-    'read': 'reading',
-    'file_operation': 'file ops',
-    'search': 'search',
-    'delegation': 'delegation',
-    'message': 'conversation',
-}
 
 
 # ---------------------------------------------------------------------------
@@ -135,61 +100,6 @@ def load_session_chunks(db, source_id):
 
 
 # ---------------------------------------------------------------------------
-# Cluster labeling
-# ---------------------------------------------------------------------------
-
-def label_cluster(chunks, cluster_indices):
-    """Label a cluster from its centroid-adjacent chunks.
-
-    Priority: file basenames > action pattern > kind pattern > content snippet.
-    """
-    if not cluster_indices:
-        return "mixed"
-
-    # Compute centroid
-    vecs = np.array([chunks[i]['embedding'] for i in cluster_indices])
-    centroid = vecs.mean(axis=0)
-    centroid /= (np.linalg.norm(centroid) + 1e-10)
-
-    # Find 5 nearest to centroid
-    sims = cosine_similarity(centroid.reshape(1, -1), vecs)[0]
-    top_k = min(5, len(sims))
-    nearest_idx = np.argsort(sims)[-top_k:][::-1]
-    nearest_chunks = [chunks[cluster_indices[i]] for i in nearest_idx]
-
-    # Strategy 1: file basenames (deduplicated)
-    files = []
-    for ch in nearest_chunks:
-        if ch['target_file']:
-            basename = os.path.basename(ch['target_file'])
-            if basename and basename not in files:
-                files.append(basename)
-    if files:
-        return ' + '.join(files[:3])
-
-    # Strategy 2: dominant action (mapped to human label)
-    actions = [ch['action'] for ch in nearest_chunks if ch['action']]
-    if actions:
-        counts = Counter(actions)
-        top_action = counts.most_common(1)[0][0]
-        # MCP tools: extract the last segment
-        if top_action.startswith('mcp__'):
-            parts = top_action.split('__')
-            return parts[-1] if len(parts) > 2 else 'MCP tool'
-        return ACTION_MAP.get(top_action, top_action)
-
-    # Strategy 3: dominant kind from ALL cluster chunks (not just centroid)
-    all_cluster_chunks = [chunks[i] for i in cluster_indices]
-    kinds = [ch['kind'] for ch in all_cluster_chunks if ch['kind']]
-    if kinds:
-        counts = Counter(kinds)
-        top_kind = counts.most_common(1)[0][0]
-        return KIND_MAP.get(top_kind, top_kind)
-
-    return "mixed"
-
-
-# ---------------------------------------------------------------------------
 # Topic extraction
 # ---------------------------------------------------------------------------
 
@@ -204,7 +114,6 @@ def _merge_topics(topics):
         else:
             merged[key] = dict(t)
     result = list(merged.values())
-    # Round pcts
     for t in result:
         t['pct'] = round(t['pct'], 1)
     result.sort(key=lambda t: t['pct'], reverse=True)
@@ -212,24 +121,24 @@ def _merge_topics(topics):
 
 
 def intra_session_topics(chunks):
-    """HDBSCAN clustering on session chunks → topic list with labels + pct."""
-    if len(chunks) < 20:
-        return None  # too few for HDBSCAN
+    """HDBSCAN clustering on session chunks -> topic list with labels + pct."""
+    if len(chunks) < HDBSCAN_MIN_CHUNKS:
+        return None
 
     vecs = np.array([ch['embedding'] for ch in chunks])
 
     clusterer = hdbscan.HDBSCAN(
-        min_cluster_size=5,
-        min_samples=3,
-        metric='euclidean',
+        min_cluster_size=HDBSCAN_MIN_CLUSTER_SIZE,
+        min_samples=HDBSCAN_MIN_SAMPLES,
+        metric=HDBSCAN_METRIC,
     )
     labels = clusterer.fit_predict(vecs)
 
     unique_labels = set(labels)
-    unique_labels.discard(-1)  # noise
+    unique_labels.discard(-1)
 
     if not unique_labels:
-        return None  # no clusters found
+        return None
 
     total = len(chunks)
     noise_indices = [i for i, l in enumerate(labels) if l == -1]
@@ -246,7 +155,6 @@ def intra_session_topics(chunks):
             'count': count,
         })
 
-    # Label noise too (instead of generic "other")
     if noise_indices:
         pct = round(100.0 * len(noise_indices) / total, 1)
         if pct >= 5.0:
@@ -257,46 +165,8 @@ def intra_session_topics(chunks):
                 'count': len(noise_indices),
             })
 
-    # Merge duplicate labels (e.g. multiple "shell" clusters)
     topics = _merge_topics(topics)
     return topics
-
-
-def short_session_label(chunks):
-    """For sessions with <20 chunks, build a simple label from file/action/kind distribution."""
-    files = []
-    actions = []
-    kinds = []
-    for ch in chunks:
-        if ch['target_file']:
-            basename = os.path.basename(ch['target_file'])
-            if basename:
-                files.append(basename)
-        if ch['action']:
-            actions.append(ch['action'])
-        if ch['kind']:
-            kinds.append(ch['kind'])
-
-    if files:
-        counts = Counter(files)
-        top_files = [f for f, _ in counts.most_common(3)]
-        label = ' + '.join(top_files)
-    elif actions:
-        counts = Counter(actions)
-        top_action = counts.most_common(1)[0][0]
-        if top_action.startswith('mcp__'):
-            parts = top_action.split('__')
-            label = parts[-1] if len(parts) > 2 else 'MCP tool'
-        else:
-            label = ACTION_MAP.get(top_action, top_action)
-    elif kinds:
-        counts = Counter(kinds)
-        top_kind = counts.most_common(1)[0][0]
-        label = KIND_MAP.get(top_kind, top_kind)
-    else:
-        label = "mixed"
-
-    return [{'label': label, 'pct': 100.0, 'count': len(chunks)}]
 
 
 # ---------------------------------------------------------------------------
@@ -304,10 +174,7 @@ def short_session_label(chunks):
 # ---------------------------------------------------------------------------
 
 def build_community_labels(db):
-    """Label communities by dominant project distribution.
-
-    Returns dict: community_id → label string like 'axpmarket (96%)'
-    """
+    """Label communities by dominant project distribution."""
     rows = db.execute("""
         SELECT g.community_id, src.project, COUNT(*) as cnt
         FROM _enrich_source_graph g
@@ -317,7 +184,6 @@ def build_community_labels(db):
         ORDER BY g.community_id, cnt DESC
     """).fetchall()
 
-    from collections import defaultdict
     comms = defaultdict(list)
     for r in rows:
         comms[r['community_id']].append((r['cnt'], r['project']))
@@ -327,7 +193,6 @@ def build_community_labels(db):
         total = sum(c for c, _ in projs)
         if total == 0:
             continue
-        # Top 2 projects if second is >= 20%
         top = projs[0]
         pct1 = round(100 * top[0] / total)
         label = f"{top[1]} ({pct1}%)"
@@ -345,12 +210,12 @@ def build_community_labels(db):
 # ---------------------------------------------------------------------------
 
 def compose_summary(topics, comm_label):
-    """Build one-liner: 'topic1 (65%) + topic2 (25%) [community: ...]'"""
+    """Build one-liner: 'topic1 (65%) + topic2 (25%) | community: ...'"""
     parts = []
 
     if topics:
         topic_strs = []
-        for t in topics[:3]:  # max 3 topics
+        for t in topics[:3]:
             topic_strs.append(f"{t['label']} ({t['pct']}%)")
         parts.append(' + '.join(topic_strs))
 
@@ -358,7 +223,6 @@ def compose_summary(topics, comm_label):
         parts.append(f"community: {comm_label}")
 
     summary = ' | '.join(parts)
-
     if len(summary) > 250:
         summary = summary[:247] + '...'
 
@@ -379,8 +243,8 @@ def main():
     db = open_cell(str(THREAD_DB))
     print(f"\nOpened: {THREAD_DB}")
 
-    # Eligible sessions
-    eligible = db.execute(SESSION_FILTER).fetchall()
+    # Eligible sessions — filter from module config
+    eligible = db.execute(session_filter_sql()).fetchall()
     eligible_ids = [r['source_id'] for r in eligible]
     print(f"Eligible sessions: {len(eligible_ids)}")
 
@@ -412,7 +276,7 @@ def main():
             skipped += 1
             continue
 
-        # Topic extraction
+        # Topic extraction — uses module HDBSCAN config
         topics = intra_session_topics(chunks)
         if topics is not None:
             hdbscan_count += 1
@@ -420,7 +284,7 @@ def main():
             topics = short_session_label(chunks)
             short_count += 1
 
-        # Community label (from project distribution)
+        # Community label
         m = meta.get(sid, {})
         comm = comm_labels.get(m.get('community_id'))
 
@@ -464,7 +328,7 @@ def main():
     print(f"  With summary: {with_summary}")
     print(f"  With 'mixed' fallback: {unknown} ({100*unknown/total:.1f}%)")
 
-    # Sample — largest sessions
+    # Sample
     print("\n  Top sessions by size:")
     samples = db.execute("""
         SELECT s.source_id, s.topic_summary, src.message_count
