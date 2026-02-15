@@ -118,7 +118,7 @@ def _read_vec_config(db) -> dict:
     """Read vec:* keys from _meta for modulation config.
 
     Returns dict of all _meta keys starting with 'vec:'.
-    Example: {'vec:hubs:weight': '1.3', 'vec:recent:half_life': '30'}
+    Example: {'vec:recent:half_life': '30'}
     """
     config = {}
     try:
@@ -287,7 +287,7 @@ def _build_retrieval_instructions(db) -> list[str]:
             "  vec_search('table', 'query', 'modifiers') → (id, score)",
             "  Modifiers (3rd arg, space-separated, composable):",
             "    community:N  kind:TYPE  limit:N     — pre-selection masks",
-            "    hubs  recent[:N]  diverse  unlike:TEXT  — score modulation",
+            "    recent[:N]  diverse  unlike:TEXT          — score modulation",
             "  JOIN messages m ON v.id = m.id         — full SQL after",
         ])
 
@@ -337,8 +337,8 @@ def build_instructions() -> str:
         "  ORDER BY v.score DESC LIMIT 10",
         "",
         "  No modifiers = raw cosine similarity.",
-        "  vec_search('_raw_chunks', 'auth', 'hubs recent:7 diverse')",
-        "  vec_search('_raw_chunks', 'SOMA identity', 'kind:delegation community:17 hubs')",
+        "  vec_search('_raw_chunks', 'auth', 'recent:7 diverse')",
+        "  vec_search('_raw_chunks', 'SOMA identity', 'kind:delegation community:17')",
         "",
         "HYBRID (FTS + semantic + graph):",
         "  vec_search('_raw_chunks', 'query')                    # Semantic candidates",

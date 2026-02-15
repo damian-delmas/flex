@@ -4,21 +4,25 @@ Flexsearch Vector Cache
 Matrix-based semantic search. Trades memory for speed.
 Loads all vectors once, queries in <1ms via BLAS matmul.
 
-Landscape modulations (applied on full N array before top-k):
+Three retrieval layers:
+  vec_search (numpy)  — cosine matmul + candidate shaping
+  @structure (numpy)  — ephemeral micro-graph on candidates (future)
+  SQL                 — everything else (ORDER BY, WHERE, JOIN)
+
+vec_search modulations (applied on full N array before top-k):
 - Pre-filter masks: community:N, kind:TYPE (zero non-matching)
 - Matrix multiply (corpus-wide cosine similarity)
-- Hub boost: scores *= (1 + weight * centrality)
-- Bridge boost: scores *= (1 + weight) for cross-community connectors
 - Temporal decay: scores *= 1 / (1 + days_ago / half_life)
 - Contrastive (second matmul against negative query)
-- MMR diversity (iterative pairwise selection)
+- MMR diversity (iterative pairwise selection, returns MMR scores)
+
+Hub/bridge boost moved to SQL: ORDER BY v.score * (1 + m.centrality)
+Eventually replaced by @structure query-local PageRank.
 
 SQL usage:
     vec_search('_raw_chunks', 'auth')                    -- raw cosine
-    vec_search('_raw_chunks', 'auth', 'hubs')            -- hub boost
-    vec_search('_raw_chunks', 'auth', 'bridges')          -- bridge boost
-    vec_search('_raw_chunks', 'auth', 'kind:delegation community:12 hubs')
-    vec_search('_raw_chunks', 'auth', 'hubs recent:7 diverse unlike:jwt')
+    vec_search('_raw_chunks', 'auth', 'recent:7 diverse unlike:jwt')
+    vec_search('_raw_chunks', 'auth', 'kind:delegation community:12')
 
 Performance:
     1k docs:   0.1ms
@@ -42,8 +46,6 @@ def parse_modifiers(modifier_str: str) -> dict:
     """Parse a modifier string into modulation parameters.
 
     Tokens (space-separated, composable):
-        hubs            hub boost by centrality
-        bridges         bridge boost (cross-community connectors)
         recent          temporal decay (cell-configured half-life)
         recent:N        temporal decay with N-day half-life
         unlike:TEXT     contrastive — demote similarity to TEXT
@@ -52,13 +54,11 @@ def parse_modifiers(modifier_str: str) -> dict:
         community:N     pre-filter to community ID
         kind:TYPE       pre-filter to semantic kind
 
-    Returns dict with keys: hubs, bridges, recent, recent_days, unlike, diverse,
+    Returns dict with keys: recent, recent_days, unlike, diverse,
     limit, community, kind.
     Unknown tokens silently ignored (forward-compatible).
     """
     result = {
-        'hubs': False,
-        'bridges': False,
         'recent': False,
         'recent_days': None,
         'unlike': None,
@@ -72,11 +72,7 @@ def parse_modifiers(modifier_str: str) -> dict:
         return result
 
     for token in modifier_str.strip().split():
-        if token == 'hubs':
-            result['hubs'] = True
-        elif token == 'bridges':
-            result['bridges'] = True
-        elif token == 'diverse':
+        if token == 'diverse':
             result['diverse'] = True
         elif token == 'recent':
             result['recent'] = True
@@ -125,10 +121,7 @@ class VectorCache:
         self.loaded_at: Optional[float] = None
         self.dims: int = 0
         # Column arrays for landscape modulation (N,), aligned with self.ids
-        self.centrality: Optional[np.ndarray] = None   # (N,) float32, 0-1 normalized
         self.timestamps: Optional[np.ndarray] = None    # (N,) float64, epoch seconds
-        self.is_hub: Optional[np.ndarray] = None        # (N,) bool
-        self.is_bridge: Optional[np.ndarray] = None    # (N,) bool
         # Pre-filter arrays (N,), aligned with self.ids
         self.community_ids: Optional[np.ndarray] = None  # (N,) int32, -1 = unmapped
         self.kinds: Optional[np.ndarray] = None           # (N,) object, '' = unmapped
@@ -210,36 +203,22 @@ class VectorCache:
         except Exception as e:
             print(f"VectorCache: timestamps load failed: {e}", file=sys.stderr)
 
-        # --- Graph columns: centrality, is_hub, community_id (single query) ---
-        raw_centrality = np.zeros(N, dtype=np.float32)
-        self.is_hub = np.zeros(N, dtype=bool)
-        self.is_bridge = np.zeros(N, dtype=bool)
+        # --- Graph columns: community_id (for pre-filter mask) ---
         self.community_ids = np.full(N, -1, dtype=np.int32)
 
         try:
             rows = db.execute("""
-                SELECT e.chunk_id, g.centrality, g.is_hub, g.community_id,
-                       g.is_bridge
+                SELECT e.chunk_id, g.community_id
                 FROM _edges_source e
                 JOIN _enrich_source_graph g ON e.source_id = g.source_id
+                WHERE g.community_id IS NOT NULL
             """).fetchall()
             for row in rows:
                 idx = self._id_to_idx.get(row[0])
                 if idx is not None:
-                    raw_centrality[idx] = float(row[1]) if row[1] else 0.0
-                    self.is_hub[idx] = bool(row[2])
-                    if row[3] is not None:
-                        self.community_ids[idx] = int(row[3])
-                    self.is_bridge[idx] = bool(row[4])
+                    self.community_ids[idx] = int(row[1])
         except Exception as e:
-            print(f"VectorCache: graph columns load failed: {e}", file=sys.stderr)
-
-        # Min-max normalize centrality to 0-1
-        cmin, cmax = float(raw_centrality.min()), float(raw_centrality.max())
-        if cmax > cmin:
-            self.centrality = (raw_centrality - cmin) / (cmax - cmin)
-        else:
-            self.centrality = np.zeros(N, dtype=np.float32)
+            print(f"VectorCache: community_ids load failed: {e}", file=sys.stderr)
 
         # --- Kinds: chunk -> _enrich_types ---
         self.kinds = np.empty(N, dtype=object)
@@ -268,10 +247,11 @@ class VectorCache:
 
         Landscape modulations (applied on full N array before top-k):
         1. Matrix multiply: corpus-wide cosine similarity
-        2. Hub boost: scores *= (1 + weight * centrality)
-        3. Temporal decay: scores *= 1 / (1 + days_ago / half_life)
-        4. Contrastive (not_like_vec): penalize similarity to negative query
-        5. MMR diversity: iterative selection maximizing relevance - redundancy
+        2. Temporal decay: scores *= 1 / (1 + days_ago / half_life)
+        3. Contrastive (not_like_vec): penalize similarity to negative query
+        4. MMR diversity: iterative selection maximizing relevance - redundancy
+
+        Hub/bridge boost moved to SQL: ORDER BY v.score * (1 + m.centrality)
 
         Args:
             query_vec: Query embedding (dims,)
@@ -318,17 +298,6 @@ class VectorCache:
         # === LANDSCAPE MODULATIONS (full N array, before candidate selection) ===
         if modifiers:
             cfg = config or {}
-
-            # Hub boost: scores *= (1 + weight * normalized_centrality)
-            if modifiers.get('hubs') and self.centrality is not None:
-                weight = float(cfg.get('vec:hubs:weight', 1.3))
-                similarities = similarities * (1.0 + weight * self.centrality)
-
-            # Bridge boost: scores *= (1 + weight) for cross-community connectors
-            if modifiers.get('bridges') and self.is_bridge is not None:
-                weight = float(cfg.get('vec:bridges:weight', 1.5))
-                bridge_boost = np.where(self.is_bridge, 1.0 + weight, 1.0)
-                similarities = similarities * bridge_boost
 
             # Temporal decay: scores *= 1 / (1 + days_ago / half_life)
             if modifiers.get('recent') and self.timestamps is not None:
@@ -380,30 +349,31 @@ class VectorCache:
         # Filter -inf
         top_indices = [i for i in top_indices if similarities[i] != -np.inf]
 
-        # 3. MMR diversity — iterative selection
+        # 3. MMR diversity — iterative selection (returns MMR scores)
         if diverse and len(top_indices) > limit:
-            selected_indices = self._mmr_select(top_indices, similarities, limit,
-                                                   lambda_=mmr_lambda)
-        else:
-            selected_indices = top_indices[:limit]
+            mmr_results = self._mmr_select(top_indices, similarities, limit,
+                                           lambda_=mmr_lambda)
+            return [{'id': self.ids[idx], 'score': float(score)}
+                    for idx, score in mmr_results]
 
-        # Build results
-        results = []
-        for idx in selected_indices:
-            results.append({
-                'id': self.ids[idx],
-                'score': float(similarities[idx])
-            })
-
-        return results
+        # Build results (cosine/modulated scores)
+        return [{'id': self.ids[idx], 'score': float(similarities[idx])}
+                for idx in top_indices[:limit]]
 
     def _mmr_select(self, candidates: list, similarities: np.ndarray,
                     k: int, lambda_: float = 0.7) -> list:
-        """MMR: iteratively select for relevance minus redundancy."""
+        """MMR: iteratively select for relevance minus redundancy.
+
+        Returns list of (index, mmr_score) tuples. MMR scores monotonically
+        decrease by construction, so ORDER BY score DESC in SQL preserves
+        the diversity ordering.
+        """
         if not candidates:
             return []
 
-        selected = [candidates[0]]
+        # First item: highest cosine, MMR score = lambda * relevance
+        first = candidates[0]
+        selected = [(first, lambda_ * float(similarities[first]))]
         remaining = list(candidates[1:])
 
         while len(selected) < k and remaining:
@@ -414,8 +384,8 @@ class VectorCache:
 
                 # Max similarity to any already selected
                 max_sim = 0.0
-                for sel in selected:
-                    sim = float(np.dot(cand_vec, self.matrix[sel]))
+                for sel_idx, _ in selected:
+                    sim = float(np.dot(cand_vec, self.matrix[sel_idx]))
                     max_sim = max(max_sim, sim)
 
                 # MMR: lambda * relevance - (1-lambda) * redundancy
@@ -425,7 +395,7 @@ class VectorCache:
                     best_idx = i
 
             if best_idx >= 0:
-                selected.append(remaining.pop(best_idx))
+                selected.append((remaining.pop(best_idx), best_score))
             else:
                 break
 
@@ -557,8 +527,7 @@ def register_vec_search(conn, caches: dict, embed_fn, cell_config: dict = None):
 
     SQL usage:
         vec_search('_raw_chunks', 'auth')                              -- raw cosine
-        vec_search('_raw_chunks', 'auth', 'hubs')                      -- hub boost
-        vec_search('_raw_chunks', 'auth', 'hubs recent:7 diverse unlike:jwt')
+        vec_search('_raw_chunks', 'auth', 'recent:7 diverse unlike:jwt')
     """
     import json
     cfg = cell_config or {}
@@ -580,16 +549,13 @@ def register_vec_search(conn, caches: dict, embed_fn, cell_config: dict = None):
                 'kinds_sample': list(unique_kinds) if unique_kinds else None,
                 'has_community_ids': cache.community_ids is not None,
                 'community_ids_populated': n_comm_set,
-                'has_centrality': cache.centrality is not None,
-                'has_bridges': cache.is_bridge is not None,
-                'bridges_populated': int(cache.is_bridge.sum()) if cache.is_bridge is not None else 0,
                 'has_timestamps': cache.timestamps is not None,
             })
 
         query_vec = np.squeeze(embed_fn(query_text))
         modifiers = parse_modifiers(modifier_str) if modifier_str else None
 
-        limit = 200
+        limit = 500
         if modifiers and modifiers.get('limit'):
             limit = modifiers['limit']
 

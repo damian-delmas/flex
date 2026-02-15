@@ -375,8 +375,6 @@ class TestParseModifiers:
     def test_empty_string(self):
         from flexsearch.retrieve.vec_search import parse_modifiers
         result = parse_modifiers('')
-        assert result['hubs'] is False
-        assert result['bridges'] is False
         assert result['recent'] is False
         assert result['diverse'] is False
         assert result['unlike'] is None
@@ -385,12 +383,14 @@ class TestParseModifiers:
     def test_none(self):
         from flexsearch.retrieve.vec_search import parse_modifiers
         result = parse_modifiers(None)
-        assert result['hubs'] is False
+        assert result['recent'] is False
 
-    def test_hubs_only(self):
+    def test_hubs_ignored(self):
+        """hubs/bridges are now unknown tokens — silently ignored."""
         from flexsearch.retrieve.vec_search import parse_modifiers
-        result = parse_modifiers('hubs')
-        assert result['hubs'] is True
+        result = parse_modifiers('hubs bridges')
+        assert 'hubs' not in result
+        assert 'bridges' not in result
         assert result['recent'] is False
 
     def test_recent_no_days(self):
@@ -420,17 +420,9 @@ class TestParseModifiers:
         result = parse_modifiers('limit:50')
         assert result['limit'] == 50
 
-    def test_bridges(self):
-        from flexsearch.retrieve.vec_search import parse_modifiers
-        result = parse_modifiers('bridges')
-        assert result['bridges'] is True
-        assert result['hubs'] is False
-
     def test_composed(self):
         from flexsearch.retrieve.vec_search import parse_modifiers
-        result = parse_modifiers('hubs bridges recent:7 diverse unlike:jwt limit:50')
-        assert result['hubs'] is True
-        assert result['bridges'] is True
+        result = parse_modifiers('recent:7 diverse unlike:jwt limit:50')
         assert result['recent'] is True
         assert result['recent_days'] == 7
         assert result['diverse'] is True
@@ -440,7 +432,6 @@ class TestParseModifiers:
     def test_unknown_token_ignored(self):
         from flexsearch.retrieve.vec_search import parse_modifiers
         result = parse_modifiers('hubs foo bar')
-        assert result['hubs'] is True
         assert result['recent'] is False
 
 
@@ -449,21 +440,7 @@ class TestParseModifiers:
 # =============================================================================
 
 class TestLoadColumns:
-    """load_columns() populates centrality, timestamps, is_hub arrays."""
-
-    def test_centrality_loaded(self, mod_cache):
-        assert mod_cache.centrality is not None
-        assert mod_cache.centrality.shape == (5,)
-
-    def test_centrality_normalized_0_1(self, mod_cache):
-        assert mod_cache.centrality.min() >= 0.0
-        assert mod_cache.centrality.max() <= 1.0
-
-    def test_hub_chunks_have_higher_centrality(self, mod_cache):
-        # a,b are in src-1 (hub, centrality=0.85), c,e are src-2 (0.30), d is src-3 (0.10)
-        idx_a = mod_cache._id_to_idx['a']
-        idx_d = mod_cache._id_to_idx['d']
-        assert mod_cache.centrality[idx_a] > mod_cache.centrality[idx_d]
+    """load_columns() populates timestamps, community_ids, kinds arrays."""
 
     def test_timestamps_loaded(self, mod_cache):
         assert mod_cache.timestamps is not None
@@ -471,20 +448,9 @@ class TestLoadColumns:
         # All timestamps should be positive (set in fixture)
         assert np.all(mod_cache.timestamps > 0)
 
-    def test_is_hub_loaded(self, mod_cache):
-        assert mod_cache.is_hub is not None
-        idx_a = mod_cache._id_to_idx['a']
-        idx_c = mod_cache._id_to_idx['c']
-        assert mod_cache.is_hub[idx_a] == True
-        assert mod_cache.is_hub[idx_c] == False
-
-    def test_is_bridge_loaded(self, mod_cache):
-        assert mod_cache.is_bridge is not None
-        # src-2 (chunks c, e) is bridge
-        idx_c = mod_cache._id_to_idx['c']
-        idx_a = mod_cache._id_to_idx['a']
-        assert mod_cache.is_bridge[idx_c] == True
-        assert mod_cache.is_bridge[idx_a] == False
+    def test_community_ids_loaded(self, mod_cache):
+        assert mod_cache.community_ids is not None
+        assert mod_cache.community_ids.shape == (5,)
 
     def test_missing_graph_table_is_safe(self):
         """Cells without _enrich_source_graph don't crash."""
@@ -498,92 +464,13 @@ class TestLoadColumns:
         vc = VectorCache()
         vc.load_from_db(conn, '_raw_chunks', 'embedding', 'id')
         vc.load_columns(conn, '_raw_chunks', 'id')
-        assert vc.centrality is not None
-        assert float(vc.centrality[0]) == 0.0
+        assert vc.community_ids is not None
+        assert vc.community_ids[0] == -1
 
 
 # =============================================================================
 # Hub Modulation
 # =============================================================================
-
-class TestHubModulation:
-    """Hub boost modulates the full landscape before candidate selection."""
-
-    def test_hub_boost_raises_hub_scores(self, mod_cache):
-        """Hub chunks should score higher with hubs=True than without."""
-        query = _make_vec([1.0, 0.0, 0.0])
-        config = {'vec:hubs:weight': '1.3'}
-        modifiers = {'hubs': True, 'recent': False, 'recent_days': None,
-                     'unlike': None, 'diverse': False, 'limit': None}
-
-        base = cache_search_score(mod_cache, query, 'a')
-        boosted = cache_search_score(mod_cache, query, 'a', modifiers=modifiers, config=config)
-        assert boosted > base
-
-    def test_hub_boost_no_centrality_is_noop(self, cache):
-        """Cache without load_columns should not crash with hubs modifier."""
-        query = _make_vec([1.0, 0.0, 0.0])
-        modifiers = {'hubs': True, 'recent': False, 'recent_days': None,
-                     'unlike': None, 'diverse': False, 'limit': None}
-        base = cache.search(query, limit=5)
-        boosted = cache.search(query, limit=5, modifiers=modifiers, config={})
-        # Should return same results (centrality is None -> noop)
-        assert base[0]['id'] == boosted[0]['id']
-
-    def test_hub_weight_zero_is_noop(self, mod_cache):
-        """Weight=0 should produce same results as no modulation."""
-        query = _make_vec([1.0, 0.0, 0.0])
-        config = {'vec:hubs:weight': '0'}
-        modifiers = {'hubs': True, 'recent': False, 'recent_days': None,
-                     'unlike': None, 'diverse': False, 'limit': None}
-        base = mod_cache.search(query, limit=5)
-        boosted = mod_cache.search(query, limit=5, modifiers=modifiers, config=config)
-        # With weight=0: (1 + 0 * centrality) = 1.0 for all, so scores same
-        np.testing.assert_allclose(
-            [r['score'] for r in base],
-            [r['score'] for r in boosted],
-            atol=1e-6
-        )
-
-
-# =============================================================================
-# Bridge Modulation
-# =============================================================================
-
-class TestBridgeModulation:
-    """Bridge boost modulates cross-community connector scores."""
-
-    def test_bridge_boost_raises_bridge_scores(self, mod_cache):
-        """Bridge chunks (src-2: c, e) should score higher with bridges=True."""
-        query = _make_vec([0.7, 0.7, 0.0])  # closest to 'e' (bridge source)
-        modifiers = {'hubs': False, 'bridges': True, 'recent': False,
-                     'recent_days': None, 'unlike': None, 'diverse': False,
-                     'limit': None, 'community': None, 'kind': None}
-
-        base = cache_search_score(mod_cache, query, 'e')
-        boosted = cache_search_score(mod_cache, query, 'e', modifiers=modifiers, config={})
-        assert boosted > base
-
-    def test_bridge_boost_no_effect_on_non_bridges(self, mod_cache):
-        """Non-bridge chunks should not be boosted."""
-        query = _make_vec([0.0, 0.0, 1.0])  # closest to 'd' (src-3, not bridge)
-        modifiers = {'hubs': False, 'bridges': True, 'recent': False,
-                     'recent_days': None, 'unlike': None, 'diverse': False,
-                     'limit': None, 'community': None, 'kind': None}
-
-        base = cache_search_score(mod_cache, query, 'd')
-        boosted = cache_search_score(mod_cache, query, 'd', modifiers=modifiers, config={})
-        np.testing.assert_allclose(base, boosted, atol=1e-6)
-
-    def test_bridge_no_data_is_noop(self, cache):
-        """Cache without load_columns should not crash with bridges modifier."""
-        query = _make_vec([1.0, 0.0, 0.0])
-        modifiers = {'hubs': False, 'bridges': True, 'recent': False,
-                     'recent_days': None, 'unlike': None, 'diverse': False,
-                     'limit': None, 'community': None, 'kind': None}
-        results = cache.search(query, limit=5, modifiers=modifiers, config={})
-        assert len(results) > 0
-
 
 # =============================================================================
 # Temporal Modulation
@@ -596,7 +483,7 @@ class TestRecentModulation:
         """Recent chunks should rank higher with recent modifier."""
         query = _make_vec([1.0, 0.0, 0.0])
         config = {'vec:recent:half_life': '30'}
-        modifiers = {'hubs': False, 'recent': True, 'recent_days': None,
+        modifiers = {'recent': True, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None}
 
         # a is 1 day old, b is 30 days old. Both similar to query.
@@ -615,9 +502,9 @@ class TestRecentModulation:
         """recent:7 should use 7-day half-life regardless of config."""
         query = _make_vec([1.0, 0.0, 0.0])
         config = {'vec:recent:half_life': '365'}  # very slow decay
-        modifiers_fast = {'hubs': False, 'recent': True, 'recent_days': 7,
+        modifiers_fast = {'recent': True, 'recent_days': 7,
                          'unlike': None, 'diverse': False, 'limit': None}
-        modifiers_slow = {'hubs': False, 'recent': True, 'recent_days': None,
+        modifiers_slow = {'recent': True, 'recent_days': None,
                          'unlike': None, 'diverse': False, 'limit': None}
 
         # b is 30 days old. With 7-day half-life, it decays much more than 365-day
@@ -628,7 +515,7 @@ class TestRecentModulation:
     def test_recent_no_timestamps_is_noop(self, cache):
         """Cache without timestamps should not crash with recent modifier."""
         query = _make_vec([1.0, 0.0, 0.0])
-        modifiers = {'hubs': False, 'recent': True, 'recent_days': None,
+        modifiers = {'recent': True, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None}
         base = cache.search(query, limit=5)
         recent = cache.search(query, limit=5, modifiers=modifiers, config={})
@@ -642,22 +529,11 @@ class TestRecentModulation:
 class TestComposedModulations:
     """Multiple modulations compose multiplicatively."""
 
-    def test_hubs_plus_recent(self, mod_cache):
-        """Both hubs and recent can be active simultaneously."""
+    def test_recent_plus_diverse(self, mod_cache):
+        """Recent and diverse compose."""
         query = _make_vec([1.0, 0.0, 0.0])
-        config = {'vec:hubs:weight': '1.3', 'vec:recent:half_life': '30'}
-        modifiers = {'hubs': True, 'recent': True, 'recent_days': None,
-                     'unlike': None, 'diverse': False, 'limit': None}
-        results = mod_cache.search(query, limit=5, modifiers=modifiers, config=config)
-        assert len(results) > 0
-        # a is hub AND recent — should be top
-        assert results[0]['id'] == 'a'
-
-    def test_hubs_plus_diverse(self, mod_cache):
-        """Hub boost + diversity compose."""
-        query = _make_vec([0.5, 0.5, 0.0])
-        config = {'vec:hubs:weight': '1.3'}
-        modifiers = {'hubs': True, 'recent': False, 'recent_days': None,
+        config = {'vec:recent:half_life': '30'}
+        modifiers = {'recent': True, 'recent_days': None,
                      'unlike': None, 'diverse': True, 'limit': None}
         results = mod_cache.search(query, limit=3, modifiers=modifiers, config=config,
                                    oversample=5)
@@ -666,8 +542,8 @@ class TestComposedModulations:
     def test_all_modulations(self, mod_cache):
         """All modifiers active at once doesn't crash."""
         query = _make_vec([0.5, 0.5, 0.0])
-        config = {'vec:hubs:weight': '1.3', 'vec:recent:half_life': '30'}
-        modifiers = {'hubs': True, 'recent': True, 'recent_days': 7,
+        config = {'vec:recent:half_life': '30'}
+        modifiers = {'recent': True, 'recent_days': 7,
                      'unlike': None, 'diverse': True, 'limit': 3}
         results = mod_cache.search(query, limit=5, modifiers=modifiers, config=config,
                                    oversample=5)
@@ -684,7 +560,7 @@ class TestCommunityPreFilter:
     def test_community_filter_excludes_other_communities(self, mod_cache):
         """Only chunks in community 2 survive."""
         query = _make_vec([0.5, 0.5, 0.5])
-        modifiers = {'hubs': False, 'recent': False, 'recent_days': None,
+        modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None,
                      'community': 2, 'kind': None}
         results = mod_cache.search(query, limit=5, modifiers=modifiers)
@@ -694,11 +570,11 @@ class TestCommunityPreFilter:
         assert 'a' not in result_ids
         assert 'c' not in result_ids
 
-    def test_community_filter_with_hub_boost(self, mod_cache):
-        """Hub boost composes with community filter."""
+    def test_community_filter_with_recent(self, mod_cache):
+        """Recent composes with community filter."""
         query = _make_vec([1.0, 0.0, 0.0])
-        config = {'vec:hubs:weight': '1.3'}
-        modifiers = {'hubs': True, 'recent': False, 'recent_days': None,
+        config = {'vec:recent:half_life': '30'}
+        modifiers = {'recent': True, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None,
                      'community': 1, 'kind': None}
         results = mod_cache.search(query, limit=5, modifiers=modifiers, config=config)
@@ -711,7 +587,7 @@ class TestCommunityPreFilter:
     def test_community_nonexistent_returns_empty(self, mod_cache):
         """Non-existent community returns no results."""
         query = _make_vec([1.0, 0.0, 0.0])
-        modifiers = {'hubs': False, 'recent': False, 'recent_days': None,
+        modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None,
                      'community': 999, 'kind': None}
         results = mod_cache.search(query, limit=5, modifiers=modifiers)
@@ -720,7 +596,7 @@ class TestCommunityPreFilter:
     def test_community_no_data_is_noop(self, cache):
         """Cache without community_ids ignores community modifier."""
         query = _make_vec([1.0, 0.0, 0.0])
-        modifiers = {'hubs': False, 'recent': False, 'recent_days': None,
+        modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None,
                      'community': 1, 'kind': None}
         results = cache.search(query, limit=5, modifiers=modifiers)
@@ -737,7 +613,7 @@ class TestKindPreFilter:
     def test_kind_filter_selects_delegation_only(self, mod_cache):
         """Only delegation chunks survive."""
         query = _make_vec([0.5, 0.5, 0.5])
-        modifiers = {'hubs': False, 'recent': False, 'recent_days': None,
+        modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None,
                      'community': None, 'kind': 'delegation'}
         results = mod_cache.search(query, limit=5, modifiers=modifiers)
@@ -748,7 +624,7 @@ class TestKindPreFilter:
     def test_kind_filter_selects_prompt_only(self, mod_cache):
         """Only prompt chunks survive."""
         query = _make_vec([0.0, 1.0, 0.0])
-        modifiers = {'hubs': False, 'recent': False, 'recent_days': None,
+        modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None,
                      'community': None, 'kind': 'prompt'}
         results = mod_cache.search(query, limit=5, modifiers=modifiers)
@@ -756,20 +632,19 @@ class TestKindPreFilter:
         assert results[0]['id'] == 'c'
 
     def test_kind_filter_with_hub_boost(self, mod_cache):
-        """Hub boost composes with kind filter — hub delegation ranks first."""
+        """Kind filter restricts to delegation only — a and e."""
         query = _make_vec([0.5, 0.5, 0.0])
-        config = {'vec:hubs:weight': '1.3'}
-        modifiers = {'hubs': True, 'recent': False, 'recent_days': None,
+        modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None,
                      'community': None, 'kind': 'delegation'}
-        results = mod_cache.search(query, limit=5, modifiers=modifiers, config=config)
-        # a (delegation, hub) should beat e (delegation, non-hub)
-        assert results[0]['id'] == 'a'
+        results = mod_cache.search(query, limit=5, modifiers=modifiers)
+        result_ids = {r['id'] for r in results}
+        assert result_ids == {'a', 'e'}
 
     def test_kind_nonexistent_returns_empty(self, mod_cache):
         """Non-existent kind returns no results."""
         query = _make_vec([1.0, 0.0, 0.0])
-        modifiers = {'hubs': False, 'recent': False, 'recent_days': None,
+        modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None,
                      'community': None, 'kind': 'nonexistent'}
         results = mod_cache.search(query, limit=5, modifiers=modifiers)
@@ -778,7 +653,7 @@ class TestKindPreFilter:
     def test_kind_no_data_is_noop(self, cache):
         """Cache without kinds ignores kind modifier."""
         query = _make_vec([1.0, 0.0, 0.0])
-        modifiers = {'hubs': False, 'recent': False, 'recent_days': None,
+        modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None,
                      'community': None, 'kind': 'delegation'}
         results = cache.search(query, limit=5, modifiers=modifiers)
@@ -795,7 +670,7 @@ class TestCombinedPreFilters:
     def test_community_and_kind_together(self, mod_cache):
         """community:1 AND kind:delegation = only 'a' (src-1, delegation) and 'e' (src-2, delegation)."""
         query = _make_vec([0.5, 0.5, 0.5])
-        modifiers = {'hubs': False, 'recent': False, 'recent_days': None,
+        modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None,
                      'community': 1, 'kind': 'delegation'}
         results = mod_cache.search(query, limit=5, modifiers=modifiers)
@@ -806,17 +681,17 @@ class TestCombinedPreFilters:
     def test_community_and_kind_no_overlap(self, mod_cache):
         """community:2 AND kind:delegation = only d is community 2 but d is 'command'."""
         query = _make_vec([0.5, 0.5, 0.5])
-        modifiers = {'hubs': False, 'recent': False, 'recent_days': None,
+        modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None,
                      'community': 2, 'kind': 'delegation'}
         results = mod_cache.search(query, limit=5, modifiers=modifiers)
         assert len(results) == 0
 
     def test_all_prefilters_plus_modulations(self, mod_cache):
-        """Pre-filters + hubs + recent doesn't crash."""
+        """Pre-filters + recent + diverse doesn't crash."""
         query = _make_vec([0.5, 0.5, 0.0])
-        config = {'vec:hubs:weight': '1.3', 'vec:recent:half_life': '30'}
-        modifiers = {'hubs': True, 'recent': True, 'recent_days': 7,
+        config = {'vec:recent:half_life': '30'}
+        modifiers = {'recent': True, 'recent_days': 7,
                      'unlike': None, 'diverse': True, 'limit': None,
                      'community': 1, 'kind': 'delegation'}
         results = mod_cache.search(query, limit=5, modifiers=modifiers, config=config,
@@ -844,10 +719,9 @@ class TestParseModifiersPreFilter:
 
     def test_community_and_kind_composed(self):
         from flexsearch.retrieve.vec_search import parse_modifiers
-        result = parse_modifiers('kind:delegation community:17 hubs')
+        result = parse_modifiers('kind:delegation community:17')
         assert result['kind'] == 'delegation'
         assert result['community'] == 17
-        assert result['hubs'] is True
 
     def test_community_invalid_ignored(self):
         from flexsearch.retrieve.vec_search import parse_modifiers
@@ -856,7 +730,7 @@ class TestParseModifiersPreFilter:
 
     def test_defaults_are_none(self):
         from flexsearch.retrieve.vec_search import parse_modifiers
-        result = parse_modifiers('hubs')
+        result = parse_modifiers('recent')
         assert result['community'] is None
         assert result['kind'] is None
 
