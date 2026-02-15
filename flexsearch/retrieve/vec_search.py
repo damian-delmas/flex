@@ -411,37 +411,44 @@ class VectorCache:
         Returns list of (index, mmr_score) tuples. MMR scores monotonically
         decrease by construction, so ORDER BY score DESC in SQL preserves
         the diversity ordering.
+
+        Vectorized: pre-computes candidate similarity matrix once,
+        then uses numpy max() per iteration instead of Python loops.
         """
         if not candidates:
             return []
 
+        # Pre-compute pairwise similarities for all candidates (one matmul)
+        cand_vecs = self.matrix[candidates]  # (n_cand, dims)
+        cand_sims = cand_vecs @ cand_vecs.T  # (n_cand, n_cand)
+
+        n = len(candidates)
+        # Track max similarity to any selected item per candidate
+        max_sim_to_selected = np.full(n, -np.inf)
+        selected_mask = np.zeros(n, dtype=bool)
+
         # First item: highest cosine, MMR score = lambda * relevance
-        first = candidates[0]
-        selected = [(first, lambda_ * float(similarities[first]))]
-        remaining = list(candidates[1:])
+        selected = [(candidates[0], lambda_ * float(similarities[candidates[0]]))]
+        selected_mask[0] = True
+        max_sim_to_selected = np.maximum(max_sim_to_selected, cand_sims[0])
 
-        while len(selected) < k and remaining:
-            best_idx, best_score = -1, -float('inf')
-
-            for i, cand in enumerate(remaining):
-                cand_vec = self.matrix[cand]
-
-                # Max similarity to any already selected
-                max_sim = 0.0
-                for sel_idx, _ in selected:
-                    sim = float(np.dot(cand_vec, self.matrix[sel_idx]))
-                    max_sim = max(max_sim, sim)
-
-                # MMR: lambda * relevance - (1-lambda) * redundancy
-                mmr = lambda_ * similarities[cand] - (1 - lambda_) * max_sim
-                if mmr > best_score:
-                    best_score = mmr
-                    best_idx = i
-
-            if best_idx >= 0:
-                selected.append((remaining.pop(best_idx), best_score))
-            else:
+        for _ in range(k - 1):
+            if selected_mask.all():
                 break
+
+            # MMR score for all unselected candidates (vectorized)
+            relevance = np.array([similarities[candidates[i]] for i in range(n)])
+            mmr_scores = lambda_ * relevance - (1 - lambda_) * max_sim_to_selected
+            mmr_scores[selected_mask] = -np.inf  # exclude already selected
+
+            best = np.argmax(mmr_scores)
+            if mmr_scores[best] == -np.inf:
+                break
+
+            selected.append((candidates[best], float(mmr_scores[best])))
+            selected_mask[best] = True
+            # Update max similarities with newly selected item
+            max_sim_to_selected = np.maximum(max_sim_to_selected, cand_sims[best])
 
         return selected
 
