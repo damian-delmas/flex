@@ -267,120 +267,86 @@ def execute_query(db: sqlite3.Connection, query: str) -> str:
 # Build Instructions
 # ============================================================
 
-def _build_retrieval_instructions(db) -> list[str]:
-    """Build retrieval section from _meta retrieval:* keys, with fallback."""
-    parts = []
-
-    # Read retrieval contract from cell
-    phase1 = get_meta(db, 'retrieval:phase1')
-    phase2 = get_meta(db, 'retrieval:phase2')
-    phase3 = get_meta(db, 'retrieval:phase3')
-
-    if phase1 and phase2 and phase3:
-        # Strip phase label prefix from values (they're standalone in _meta
-        # but the formatted rendering adds its own labels)
-        def _strip_prefix(val):
-            """'PRE-SELECTION masks (numpy on full N): foo' → 'foo'"""
-            if ': ' in val:
-                _, rest = val.split(': ', 1)
-                return rest
-            return val
-
-        parts.extend([
-            "RETRIEVAL (3 phases — vec_search is numpy on full N, SQL composes after):",
-            "",
-            "  Phase 1 — PRE-SELECTION (masks before scoring):",
-            f"    {_strip_prefix(phase1)}",
-            "",
-            "  Phase 2 — LANDSCAPE (score modulation on full N):",
-            f"    {_strip_prefix(phase2)}",
-            "",
-            "  Phase 3 — SQL (full AI control on K candidates):",
-            f"    {_strip_prefix(phase3)}",
-        ])
-    else:
-        # Fallback for cells without retrieval keys yet
-        parts.extend([
-            "SEMANTIC SEARCH:",
-            "  vec_search('table', 'query', 'modifiers') → (id, score)",
-            "  Modifiers (3rd arg, space-separated, composable):",
-            "    community:N  kind:TYPE  limit:N     — pre-selection masks",
-            "    recent[:N]  diverse  unlike:TEXT     — score modulation",
-            "    detect_communities                   — query-time Louvain on candidates, adds _community column",
-            "  JOIN messages m ON v.id = m.id         — full SQL after",
-        ])
-
-    return parts
-
-
 def build_instructions() -> str:
-    """Build server instructions from cell _meta. The cell describes itself."""
+    """Build server instructions. The cell describes itself via @orient."""
     parts = [
-        "FlexSearch — SQL-first knowledge engine. Execute read-only SQL on knowledge cells.",
+        "FlexSearch — SQL-first knowledge engine. Read-only SQL on knowledge cells.",
         "",
         "CELLS:",
     ]
-    # Open fresh connections to read descriptions, then close
-    retrieval_parts = None
     for name in sorted(_known_cells):
         with get_cell(name) as db:
             if db:
                 desc = get_meta(db, 'description') or f"Cell: {name}"
                 parts.append(f"  {name}: {desc}")
-                if retrieval_parts is None:
-                    retrieval_parts = _build_retrieval_instructions(db)
 
     parts.extend([
         "",
-        "CELL SELECTION:",
-        "  Start with context cells (flexsearch-context, axpstack-context) for design docs,",
-        "  then thread for session provenance, claude for conversations, qmem for engine docs.",
+        "START: query=\"@orient\" for cell schema, view columns, graph intelligence, and presets.",
         "",
-        "ORIENTATION:",
-        "  SELECT value FROM _meta WHERE key='description'       # What is this cell?",
-        "  SELECT name FROM sqlite_master WHERE type='view'       # What views exist?",
-        "  PRAGMA table_info('messages')                          # View schema",
-        "  SELECT name FROM sqlite_master WHERE name LIKE '_edges_%'  # Edge tables",
-        "",
-    ])
-
-    # Build retrieval section from first cell that has keys (all cells share the model)
-    if retrieval_parts:
-        parts.extend(retrieval_parts)
-    parts.append("")
-
-    parts.extend([
-        "SEMANTIC SEARCH:",
-        "  CRITICAL: vec_search is a SQL table function, not a standalone command.",
-        "  Always use it inside SELECT ... FROM:",
+        "QUERY PATTERN:",
+        "  CRITICAL: vec_search is a SQL table function. Always use inside SELECT ... FROM.",
+        "  vec_search produces candidates. SQL composes them with everything else.",
         "",
         "  SELECT v.id, v.score, m.content",
-        "  FROM vec_search('_raw_chunks', 'your query', 'diverse') v",
+        "  FROM vec_search('_raw_chunks', 'authentication', 'diverse recent:7') v",
         "  JOIN messages m ON v.id = m.id",
-        "  ORDER BY v.score DESC LIMIT 10",
+        "  ORDER BY v.score * (1 + m.centrality) DESC",
+        "  LIMIT 10",
         "",
-        "  No modifiers = raw cosine similarity.",
-        "  vec_search('_raw_chunks', 'auth', 'recent:7 diverse')",
-        "  vec_search('_raw_chunks', 'SOMA identity', 'kind:delegation community:17')",
+        "  _raw_chunks is the embedding table (every cell).",
+        "  JOIN view varies by cell type: messages (thread), sections (doc-pac).",
+        "  v.* = vec_search output.  m.* = metadata + graph intelligence.",
+        "",
+        "vec_search TOKENS (3rd arg, space-separated, all optional):",
+        "  community:N         filter to global community before scoring",
+        "  kind:TYPE           filter to semantic kind before scoring",
+        "  limit:N             candidate count (default 500)",
+        "  diverse             MMR diversity selection",
+        "  recent[:N]          temporal decay (optional N-day half-life)",
+        "  unlike:TEXT         contrastive — demote similarity to TEXT",
+        "  detect_communities  adds _community column (per-query Louvain on candidates)",
+        "",
+        "  No tokens = raw cosine similarity. Tokens compose freely:",
+        "  vec_search('_raw_chunks', 'auth', 'diverse unlike:jwt community:3 recent:7')",
         "",
         "  -- Filter to user prompts only (essential for mining human voice):",
         "  vec_search('_raw_chunks', 'auth', 'kind:prompt diverse')",
         "",
-        "  -- Discover themes in results (query-time Louvain, adds _community column):",
-        "  vec_search('_raw_chunks', 'error handling', 'detect_communities')",
+        "ENRICHMENT COLUMNS:",
+        "  All cells (source graph):",
+        "    centrality, is_hub, community_id (stable, full-corpus)",
+        "",
+        "  thread only (claude_code enrichments):",
+        "    file_centrality, file_is_hub, file_community_id       file co-edit graph",
+        "    agents_spawned, is_orchestrator, delegation_depth      delegation graph",
+        "    kind, action, target_file, timestamp, project          chunk-level",
+        "",
+        "  Run @orient on any cell to see its full schema and available columns.",
+        "",
+        "SQL PATTERNS:",
+        "  ORDER BY v.score * (1 + m.centrality) DESC         -- hub-boosted ranking",
+        "  WHERE m.community_id = 3                            -- global community (stable)",
+        "  WHERE v._community = 2                              -- query-local (per-query, ephemeral)",
+        "  GROUP BY v._community                               -- theme survey (needs detect_communities)",
+        "  WHERE m.is_orchestrator = 1 AND m.file_is_hub = 1   -- cross-dimension (thread only)",
         "",
         "HYBRID (FTS + semantic + graph):",
-        "  vec_search('_raw_chunks', 'query')                    # Semantic candidates",
-        "  chunks_fts MATCH 'keyword'                             # FTS keyword search",
-        "  WHERE is_hub = 1 ORDER BY centrality DESC              # Graph intelligence",
+        "  vec_search for semantic candidates, chunks_fts MATCH for keywords,",
+        "  WHERE is_hub = 1 ORDER BY centrality DESC for graph intelligence.",
+        "  Plain SQL works without vec_search for exact filters (WHERE project = 'X').",
         "",
-        "PRESETS (pass @name instead of SQL — batched multi-query, saves round trips):",
-        "  @orient                             # Full cell orientation (always available)",
-        "  SELECT name, description FROM _presets  # Discover all presets",
+        "ORIENTATION (manual discovery):",
+        "  SELECT value FROM _meta WHERE key='description'",
+        "  SELECT name FROM sqlite_master WHERE type='view'",
+        "  PRAGMA table_info('messages')                       -- or 'sections' for doc-pac",
+        "  SELECT name FROM sqlite_master WHERE name LIKE '_edges_%'",
         "",
-        "IMPORTANT: Presets are invoked by passing @name as the query parameter.",
-        "  Examples: query=\"@orient\", query=\"@sessions limit=5\", query=\"@genealogy concept=caching\"",
-        "  Start with @orient to orient, then SELECT name, description FROM _presets to see all available.",
+        "PRESETS (pass @name as query parameter):",
+        "  @orient                           full cell orientation (start here)",
+        "  @genealogy concept=X              trace concept lineage",
+        "  @sessions limit=N                 recent sessions (thread)",
+        "  SELECT name, description FROM _presets    discover all",
         "",
     ])
     return "\n".join(parts)
