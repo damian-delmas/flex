@@ -140,9 +140,15 @@ def compute_scores(G) -> dict:
         hubs = [node for node, _ in sorted_nodes[:hub_threshold]]
 
     # Bridge identification (high betweenness centrality)
+    # Use approximate betweenness (k samples) for large graphs to avoid O(V*E)
     bridges = []
     try:
-        betweenness = nx.betweenness_centrality(G, weight='weight')
+        n_nodes = G.number_of_nodes()
+        if n_nodes > 500:
+            k = min(100, n_nodes // 5)
+            betweenness = nx.betweenness_centrality(G, weight='weight', k=k)
+        else:
+            betweenness = nx.betweenness_centrality(G, weight='weight')
         if betweenness:
             sorted_bridges = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)
             bridge_threshold = max(1, len(sorted_bridges) // 20)

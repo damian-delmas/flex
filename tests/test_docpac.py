@@ -45,9 +45,9 @@ def docpac_tree(tmp_path):
     (root / "changes" / "code").mkdir(parents=True)
     (root / "changes" / "code" / "refactor-log.md").write_text("# Refactor log")
 
-    # changes/design — future, design
-    (root / "changes" / "design").mkdir(parents=True)
-    (root / "changes" / "design" / "new-idea.md").write_text("# Design idea")
+    # intended/design — future, design
+    (root / "intended" / "design").mkdir(parents=True)
+    (root / "intended" / "design" / "new-idea.md").write_text("# Design idea")
 
     # changes/testing — past, testing
     (root / "changes" / "testing").mkdir(parents=True)
@@ -120,10 +120,10 @@ class TestFolderMapping:
         assert code_entries[0].temporal == 'past'
         assert code_entries[0].doc_type == 'changelog'
 
-    def test_changes_design_is_future_design(self, docpac_tree):
+    def test_intended_design_is_future_design(self, docpac_tree):
         from flexsearch.compile.docpac import parse_docpac
         entries = parse_docpac(str(docpac_tree))
-        design_entries = [e for e in entries if 'changes/design' in e.path]
+        design_entries = [e for e in entries if 'intended/design' in e.path]
         assert len(design_entries) == 1
         assert design_entries[0].temporal == 'future'
         assert design_entries[0].doc_type == 'design'
@@ -137,14 +137,14 @@ class TestFolderMapping:
             assert e.temporal == 'present'
             assert e.doc_type == 'architecture'
 
-    def test_intended_proximate_is_future_plan(self, docpac_tree):
+    def test_intended_proximate_is_future_vision(self, docpac_tree):
         from flexsearch.compile.docpac import parse_docpac
         entries = parse_docpac(str(docpac_tree))
-        plan_entries = [e for e in entries if 'intended/proximate' in e.path]
-        assert len(plan_entries) >= 1
-        for e in plan_entries:
+        vision_entries = [e for e in entries if 'intended/proximate' in e.path]
+        assert len(vision_entries) >= 1
+        for e in vision_entries:
             assert e.temporal == 'future'
-            assert e.doc_type == 'plan'
+            assert e.doc_type == 'vision'
 
     def test_knowledge_is_exogenous(self, docpac_tree):
         from flexsearch.compile.docpac import parse_docpac
@@ -294,7 +294,7 @@ class TestFileDate:
 # =============================================================================
 
 class TestAllFolderMappings:
-    """Parametrized test covering all 22 FOLDER_MAP entries."""
+    """Parametrized test covering all 23 FOLDER_MAP entries."""
 
     @pytest.mark.parametrize("folder_key,expected", [
         ('changes/code',     ('past', 'changelog')),
@@ -304,13 +304,13 @@ class TestAllFolderMappings:
         ('changes/tracking', ('past', 'tracking')),
         ('changes/audits',   ('past', 'audit')),
         ('changes/review',   ('past', 'review')),
-        ('changes/design',   ('future', 'design')),
+        ('intended/design',  ('future', 'design')),
         ('changes/session',  ('past', 'session')),
         ('current/ast',      ('present', 'ast')),
         ('current',          ('present', 'architecture')),
-        ('intended/proximate', ('future', 'plan')),
+        ('intended/proximate', ('future', 'vision')),
         ('intended/ultimate',  ('future', 'vision')),
-        ('intended',         ('future', 'plan')),
+        ('intended',         ('future', 'vision')),
         ('knowledge',        ('exogenous', 'knowledge')),
         ('philosophy',       ('exogenous', 'philosophy')),
         ('onboard',          ('present', 'onboard')),
@@ -318,6 +318,7 @@ class TestAllFolderMappings:
         ('reference',        ('present', 'reference')),
         ('specs',            ('future', 'spec')),
         ('slots',            ('future', 'slot')),
+        ('shapes',           ('future', 'shape')),
         ('plans',            ('future', 'plan')),
     ])
     def test_folder_map_entry(self, tmp_path, folder_key, expected):
