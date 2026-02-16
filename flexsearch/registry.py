@@ -17,8 +17,8 @@ from typing import Optional
 CELLS_ROOT = Path.home() / ".qmem/cells/projects"
 
 # Registry location
-FLEXSEARCH_DIR = Path.home() / ".flexsearch"
-REGISTRY_DB = FLEXSEARCH_DIR / "registry.db"
+FLEX_HOME = Path.home() / ".flex"
+REGISTRY_DB = FLEX_HOME / "registry.db"
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS cells (
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS cells (
 
 def _open_registry() -> sqlite3.Connection:
     """Open registry.db, creating ~/.flexsearch/ if needed."""
-    FLEXSEARCH_DIR.mkdir(parents=True, exist_ok=True)
+    FLEX_HOME.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(str(REGISTRY_DB), timeout=5)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA journal_mode=WAL")

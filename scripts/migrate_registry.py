@@ -31,7 +31,8 @@ def main():
         register_cell(name, db_path)
         print(f"  {name}")
 
-    print(f"\nDone. Registry at ~/.flexsearch/registry.db")
+    from flexsearch.registry import REGISTRY_DB
+    print(f"\nDone. Registry at {REGISTRY_DB}")
 
 
 if __name__ == '__main__':
