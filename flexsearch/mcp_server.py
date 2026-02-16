@@ -401,7 +401,8 @@ def _log_query(cell: str, query: str, result_json: str, elapsed_ms: float):
     """Append query to cell's history JSONL. Fire-and-forget."""
     try:
         cell_path = _db_path(cell)
-        history_path = cell_path.parent / "flexsearch-history.jsonl"
+        # History file sits alongside the cell .db: {uuid}-history.jsonl
+        history_path = cell_path.parent / f"{cell_path.stem}-history.jsonl"
         parsed = json.loads(result_json)
         if isinstance(parsed, list):
             result_count = len(parsed)

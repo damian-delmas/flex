@@ -4,16 +4,17 @@ FlexSearch Cell Registry — centralized cell catalog.
 Single source of truth for cell name → path resolution.
 All consumers import from here instead of defining CELLS_ROOT locally.
 
-Registry location: ~/.flexsearch/registry.db
-Cells stay at their current paths (no file moves).
+Registry location: ~/.flex/registry.db
+Cells live at ~/.flex/cells/{uuid}.db
 """
 
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-# Legacy default root — cells live here until explicit migration
+# Legacy default root — cells lived here before migration
 CELLS_ROOT = Path.home() / ".qmem/cells/projects"
 
 # Registry location
@@ -22,8 +23,10 @@ REGISTRY_DB = FLEX_HOME / "registry.db"
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS cells (
-    name        TEXT PRIMARY KEY,
+    id          TEXT PRIMARY KEY,
+    name        TEXT UNIQUE NOT NULL,
     path        TEXT NOT NULL,
+    corpus_path TEXT,
     cell_type   TEXT,
     description TEXT,
     created_at  TEXT NOT NULL,
@@ -31,15 +34,55 @@ CREATE TABLE IF NOT EXISTS cells (
 );
 """
 
+# Migration: add columns if upgrading from old schema
+_MIGRATIONS = [
+    "ALTER TABLE cells ADD COLUMN id TEXT",
+    "ALTER TABLE cells ADD COLUMN corpus_path TEXT",
+]
+
 
 def _open_registry() -> sqlite3.Connection:
-    """Open registry.db, creating ~/.flexsearch/ if needed."""
+    """Open registry.db, creating ~/.flex/ if needed."""
     FLEX_HOME.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(str(REGISTRY_DB), timeout=5)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA journal_mode=WAL")
     db.executescript(_SCHEMA)
+
+    # Run migrations for schema upgrades
+    for sql in _MIGRATIONS:
+        try:
+            db.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
     return db
+
+
+def _auto_detect(path_str: str) -> tuple[str | None, str | None]:
+    """Auto-detect cell_type and description from a cell's schema/meta."""
+    cell_type = None
+    description = None
+    try:
+        with sqlite3.connect(path_str, timeout=5) as cell_db:
+            # Description from _meta
+            row = cell_db.execute(
+                "SELECT value FROM _meta WHERE key = 'description'"
+            ).fetchone()
+            if row:
+                description = row[0]
+
+            # Type from _types_* tables
+            tables = {r[0] for r in cell_db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()}
+            if '_types_message' in tables:
+                cell_type = 'claude-code'
+            elif '_types_docpac' in tables:
+                cell_type = 'docpac'
+    except Exception:
+        pass
+    return cell_type, description
 
 
 def register_cell(
@@ -47,54 +90,47 @@ def register_cell(
     path: str | Path,
     cell_type: str | None = None,
     description: str | None = None,
-) -> None:
+    corpus_path: str | Path | None = None,
+) -> str:
     """Register or update a cell in the registry.
 
-    Auto-reads description from cell's _meta table if not provided.
+    Auto-detects cell_type and description from cell's schema if not provided.
+    Returns the cell's UUID id.
     """
     db = _open_registry()
     now = datetime.now(timezone.utc).isoformat()
     path_str = str(Path(path).resolve())
+    corpus_str = str(Path(corpus_path).resolve()) if corpus_path else None
 
-    # Auto-detect description from cell's _meta if not provided
-    if description is None:
-        try:
-            cell_db = sqlite3.connect(path_str, timeout=5)
-            row = cell_db.execute(
-                "SELECT value FROM _meta WHERE key = 'description'"
-            ).fetchone()
-            if row:
-                description = row[0]
-            cell_db.close()
-        except Exception:
-            pass
+    # Auto-detect if not provided
+    if cell_type is None or description is None:
+        detected_type, detected_desc = _auto_detect(path_str)
+        if cell_type is None:
+            cell_type = detected_type
+        if description is None:
+            description = detected_desc
 
-    # Auto-detect cell_type from schema if not provided
-    if cell_type is None:
-        try:
-            cell_db = sqlite3.connect(path_str, timeout=5)
-            tables = {r[0] for r in cell_db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()}
-            cell_db.close()
-            if '_types_message' in tables:
-                cell_type = 'claude-code'
-            elif '_types_docpac' in tables:
-                cell_type = 'docpac'
-        except Exception:
-            pass
+    # Check if cell already has an id
+    existing = db.execute(
+        "SELECT id FROM cells WHERE name = ?", (name,)
+    ).fetchone()
+    cell_id = existing['id'] if existing and existing['id'] else str(uuid.uuid4())
 
     db.execute("""
-        INSERT INTO cells (name, path, cell_type, description, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO cells (id, name, path, corpus_path, cell_type, description,
+                           created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(name) DO UPDATE SET
+            id = COALESCE(cells.id, excluded.id),
             path = excluded.path,
+            corpus_path = COALESCE(excluded.corpus_path, cells.corpus_path),
             cell_type = COALESCE(excluded.cell_type, cells.cell_type),
             description = COALESCE(excluded.description, cells.description),
             updated_at = excluded.updated_at
-    """, (name, path_str, cell_type, description, now, now))
+    """, (cell_id, name, path_str, corpus_str, cell_type, description, now, now))
     db.commit()
     db.close()
+    return cell_id
 
 
 def unregister_cell(name: str) -> bool:
@@ -110,7 +146,7 @@ def unregister_cell(name: str) -> bool:
 def resolve_cell(name: str) -> Optional[Path]:
     """Resolve cell name to db path. Registry first, filesystem fallback.
 
-    Returns Path to main.db or None if cell doesn't exist anywhere.
+    Returns Path to .db file or None if cell doesn't exist anywhere.
     """
     # 1. Try registry
     try:
@@ -126,11 +162,36 @@ def resolve_cell(name: str) -> Optional[Path]:
     except Exception:
         pass
 
-    # 2. Filesystem fallback
+    # 2. Filesystem fallback (legacy layout)
     fallback = CELLS_ROOT / name / "main.db"
     if fallback.exists():
         return fallback
 
+    return None
+
+
+def resolve_cell_for_path(file_path: str | Path) -> tuple[str, Path] | None:
+    """Resolve a file path to its owning cell via longest corpus_path match.
+
+    Used by the worker to determine which cell a file belongs to.
+    Returns (cell_name, db_path) or None.
+    """
+    file_str = str(Path(file_path).resolve())
+    try:
+        db = _open_registry()
+        row = db.execute("""
+            SELECT name, path FROM cells
+            WHERE corpus_path IS NOT NULL AND ? LIKE corpus_path || '%'
+            ORDER BY LENGTH(corpus_path) DESC
+            LIMIT 1
+        """, (file_str,)).fetchone()
+        db.close()
+        if row:
+            p = Path(row['path'])
+            if p.exists():
+                return row['name'], p
+    except Exception:
+        pass
     return None
 
 
@@ -139,8 +200,8 @@ def list_cells() -> list[dict]:
     try:
         db = _open_registry()
         rows = db.execute(
-            "SELECT name, path, cell_type, description, created_at, updated_at "
-            "FROM cells ORDER BY name"
+            "SELECT id, name, path, corpus_path, cell_type, description, "
+            "created_at, updated_at FROM cells ORDER BY name"
         ).fetchall()
         db.close()
         return [dict(r) for r in rows]

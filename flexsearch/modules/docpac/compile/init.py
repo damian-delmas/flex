@@ -396,6 +396,7 @@ def main():
     # Domain renames (graph terms stay exact)
     set_meta(db, 'view:sections:rename:source_id', 'doc_id')
     set_meta(db, 'view:sections:rename:title', 'doc_title')
+    set_meta(db, 'view:sections:rename:semantic_role', 'kind')
 
     # Retrieval contract — the cell describes its own search model
     set_meta(db, 'retrieval:phase1',
@@ -406,8 +407,8 @@ def main():
              'hubs→centrality, recent[:N]→timestamp, diverse, unlike:TEXT')
     set_meta(db, 'retrieval:phase3',
              'SQL COMPOSITION (on K candidates): '
-             'JOIN messages ON v.id = m.id — kind, community_id, centrality, '
-             'is_hub, action, target_file, timestamp, project')
+             'JOIN sections s ON v.id = s.id — kind, community_id, centrality, '
+             'is_hub, temporal, doc_type, doc_title, section_title')
 
     print("Meta populated.")
 
@@ -527,8 +528,8 @@ def main():
     # ═════════════════════════════════════════════════
     cell_name_final = os.path.basename(cell_dir)
     _registry_register(cell_name_final, db_path, cell_type='docpac',
-                       description=desc)
-    print(f"Registered in cell registry: {cell_name_final}")
+                       description=desc, corpus_path=corpus_root)
+    print(f"Registered in cell registry: {cell_name_final} (corpus={corpus_root})")
 
     # ═════════════════════════════════════════════════
     # 13. DONE

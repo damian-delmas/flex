@@ -125,12 +125,13 @@ def cmd_cells():
     unregistered = all_names - registered_names
 
     if registered:
-        print(f"{'NAME':<25} {'TYPE':<12} {'DESCRIPTION'}")
-        print("-" * 70)
+        print(f"{'NAME':<25} {'ID':<10} {'TYPE':<12} {'DESCRIPTION'}")
+        print("-" * 80)
         for c in registered:
-            desc = (c['description'] or '')[:40]
+            desc = (c['description'] or '')[:35]
             ctype = c['cell_type'] or ''
-            print(f"{c['name']:<25} {ctype:<12} {desc}")
+            cid = (c.get('id') or '')[:8]
+            print(f"{c['name']:<25} {cid:<10} {ctype:<12} {desc}")
 
     if unregistered:
         print(f"\nUnregistered (on disk at {CELLS_ROOT}):")
