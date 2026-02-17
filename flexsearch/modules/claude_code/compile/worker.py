@@ -27,6 +27,7 @@ from flexsearch.onnx.embed import get_model, encode
 from flexsearch.modules.claude_code.compile.enrich import enrich_event
 from flexsearch.modules.claude_code.compile.soft_detect import detect_file_ops
 from flexsearch.modules.claude_code.compile.skip import should_skip_event
+from flexsearch.modules.docpac.compile.worker import process_queue as docpac_process_queue
 
 QUEUE_DB = FLEX_HOME / "queue.db"
 CLAUDE_PROJECTS = Path.home() / ".claude/projects"
@@ -566,6 +567,8 @@ def daemon_loop(interval=2):
     # Startup backfill for sessions missed during outage
     startup_backfill(conn)
 
+    print("  Docpac: incremental indexing enabled", file=sys.stderr)
+
     while True:
         try:
             stats = process_queue(conn)
@@ -574,6 +577,15 @@ def daemon_loop(interval=2):
                       file=sys.stderr)
         except Exception as e:
             print(f"[worker] Error: {e}", file=sys.stderr)
+
+        # Drain docpac pending queue (same embedder, different cell connections)
+        try:
+            dp_stats = docpac_process_queue(encode)
+            if dp_stats['indexed'] > 0:
+                print(f"[docpac] indexed={dp_stats['indexed']} skipped={dp_stats['skipped']}",
+                      file=sys.stderr)
+        except Exception as e:
+            print(f"[docpac] Error: {e}", file=sys.stderr)
 
         time.sleep(interval)
 
