@@ -5,10 +5,13 @@ requires-python = ">=3.12"
 dependencies = [
     "numpy",
     "networkx",
+    "scikit-learn",
 ]
 
 [project.optional-dependencies]
 embed = ["onnxruntime", "transformers"]
+mcp = ["mcp", "starlette", "uvicorn"]
+cluster = ["hdbscan"]
 
 [build-system]
 requires = ["setuptools>=68.0"]

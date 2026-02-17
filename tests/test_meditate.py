@@ -45,8 +45,7 @@ def graph_db():
     conn.row_factory = sqlite3.Row
     conn.execute("""
         CREATE TABLE _raw_sources (
-            id TEXT PRIMARY KEY,
-            source_id TEXT,
+            source_id TEXT PRIMARY KEY,
             embedding BLOB
         )
     """)
@@ -62,8 +61,8 @@ def graph_db():
     ]
     for sid, vals in sources:
         conn.execute(
-            "INSERT INTO _raw_sources (id, source_id, embedding) VALUES (?,?,?)",
-            (sid, sid, _make_embedding(vals))
+            "INSERT INTO _raw_sources (source_id, embedding) VALUES (?,?)",
+            (sid, _make_embedding(vals))
         )
     conn.commit()
     return conn
@@ -74,7 +73,7 @@ def small_graph(graph_db):
     """Pre-built graph from graph_db."""
     from flexsearch.manage.meditate import build_similarity_graph
     G, edge_count = build_similarity_graph(
-        graph_db, '_raw_sources', 'id', 'embedding', threshold=0.3
+        graph_db, '_raw_sources', 'source_id', 'embedding', threshold=0.3
     )
     return G
 
@@ -89,7 +88,7 @@ class TestBuildGraph:
     def test_returns_graph_and_count(self, graph_db):
         from flexsearch.manage.meditate import build_similarity_graph
         G, count = build_similarity_graph(
-            graph_db, '_raw_sources', 'id', 'embedding', threshold=0.5
+            graph_db, '_raw_sources', 'source_id', 'embedding', threshold=0.5
         )
         assert G is not None
         assert isinstance(count, int)
@@ -98,14 +97,14 @@ class TestBuildGraph:
     def test_nodes_match_sources(self, graph_db):
         from flexsearch.manage.meditate import build_similarity_graph
         G, _ = build_similarity_graph(
-            graph_db, '_raw_sources', 'id', 'embedding', threshold=0.1
+            graph_db, '_raw_sources', 'source_id', 'embedding', threshold=0.1
         )
         assert set(G.nodes()) == {'s1', 's2', 's3', 's4', 's5'}
 
     def test_similar_sources_connected(self, graph_db):
         from flexsearch.manage.meditate import build_similarity_graph
         G, _ = build_similarity_graph(
-            graph_db, '_raw_sources', 'id', 'embedding', threshold=0.8
+            graph_db, '_raw_sources', 'source_id', 'embedding', threshold=0.8
         )
         # s1, s2, s3 are very similar — should be connected
         assert G.has_edge('s1', 's2') or G.has_edge('s2', 's1')
@@ -113,7 +112,7 @@ class TestBuildGraph:
     def test_orthogonal_sources_not_connected(self, graph_db):
         from flexsearch.manage.meditate import build_similarity_graph
         G, _ = build_similarity_graph(
-            graph_db, '_raw_sources', 'id', 'embedding', threshold=0.5
+            graph_db, '_raw_sources', 'source_id', 'embedding', threshold=0.5
         )
         # s1 and s4 are orthogonal — should NOT be connected
         assert not G.has_edge('s1', 's4')
@@ -121,7 +120,7 @@ class TestBuildGraph:
     def test_top_k_limits_edges(self, graph_db):
         from flexsearch.manage.meditate import build_similarity_graph
         G, _ = build_similarity_graph(
-            graph_db, '_raw_sources', 'id', 'embedding',
+            graph_db, '_raw_sources', 'source_id', 'embedding',
             threshold=0.1, top_k=1
         )
         # Each node should have at most k neighbors (in directed sense)
@@ -140,7 +139,7 @@ class TestBuildGraph:
     def test_edges_have_weight(self, graph_db):
         from flexsearch.manage.meditate import build_similarity_graph
         G, _ = build_similarity_graph(
-            graph_db, '_raw_sources', 'id', 'embedding', threshold=0.5
+            graph_db, '_raw_sources', 'source_id', 'embedding', threshold=0.5
         )
         for u, v, data in G.edges(data=True):
             assert 'weight' in data

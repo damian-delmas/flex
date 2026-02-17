@@ -279,7 +279,7 @@ def _build_source_view(view_name: str, db: sqlite3.Connection,
     # 2. _edges_source for chunk count
     has_bridge = '_edges_source' in base_cols
     if has_bridge:
-        joins.append("JOIN _edges_source s ON src.source_id = s.source_id")
+        joins.append("LEFT JOIN _edges_source s ON src.source_id = s.source_id")
         selects.append("COUNT(DISTINCT s.chunk_id) as chunk_count")
         seen.add('chunk_count')
 

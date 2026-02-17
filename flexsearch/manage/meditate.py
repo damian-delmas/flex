@@ -262,7 +262,10 @@ def run_sandbox(db: sqlite3.Connection, G, script: str) -> dict:
         'graph': G, 'db': db,
         'result': {},
         '__builtins__': {
-            k: v for k, v in __builtins__.items()
+            k: v for k, v in (
+                __builtins__ if isinstance(__builtins__, dict)
+                else vars(__builtins__)
+            ).items()
             if k in {
                 'print', 'len', 'range', 'enumerate', 'str', 'int', 'float',
                 'list', 'dict', 'set', 'tuple', 'bool', 'None', 'True', 'False',
@@ -271,7 +274,7 @@ def run_sandbox(db: sqlite3.Connection, G, script: str) -> dict:
                 'getattr', 'setattr', 'ValueError', 'TypeError', 'KeyError',
                 'Exception',
             }
-        } if isinstance(__builtins__, dict) else {},
+        },
     }
 
     try:
