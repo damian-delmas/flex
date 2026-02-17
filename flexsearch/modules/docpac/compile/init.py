@@ -398,17 +398,17 @@ def main():
 
     # Retrieval contract — the cell describes its own search model
     set_meta(db, 'retrieval:phase1',
-             'PRE-SELECTION masks (numpy on full N): '
-             'community:N→community_id, kind:TYPE→kind, limit:N')
+             'SQL PRE-FILTER (4th arg to vec_ops): '
+             'Any SQL returning chunk_ids. Restricts which chunks enter the landscape.')
     set_meta(db, 'retrieval:phase2',
-             'LANDSCAPE scoring (numpy on full N): '
-             'recent[:N]→timestamp, diverse, unlike:TEXT')
+             'LANDSCAPE (numpy on filtered N): '
+             'diverse, recent[:N], unlike:TEXT, like:id1,id2, from:TEXT to:TEXT')
     set_meta(db, 'retrieval:phase3',
              'ENRICH (query-time topology on K candidates): '
-             'detect_communities→_community column (per-query Louvain)')
+             'local_communities→_community column (per-query Louvain)')
     set_meta(db, 'retrieval:phase4',
              'SQL COMPOSITION (on K candidates): '
-             'JOIN sections s ON v.id = s.id — kind, community_id, centrality, '
+             'JOIN sections s ON v.id = s.id — community_id, centrality, '
              'is_hub, temporal, doc_type, doc_title, section_title')
 
     print("Meta populated.")

@@ -5,24 +5,26 @@ Matrix-based semantic search. Trades memory for speed.
 Loads all vectors once, queries in <1ms via BLAS matmul.
 
 Three retrieval layers:
-  vec_search (numpy)  — cosine matmul + candidate shaping
-  @structure (numpy)  — ephemeral micro-graph on candidates (future)
-  SQL                 — everything else (ORDER BY, WHERE, JOIN)
+  vec_ops (numpy)   — cosine matmul + candidate shaping
+  @structure (numpy) — ephemeral micro-graph on candidates (future)
+  SQL                — everything else (ORDER BY, WHERE, JOIN)
 
-vec_search modulations (applied on full N array before top-k):
-- Pre-filter masks: community:N, kind:TYPE (zero non-matching)
+Pipeline: SQL pre-filter → vec_ops (numpy) → SQL composition.
+
+vec_ops modulations (applied on full N array before top-k):
 - Matrix multiply (corpus-wide cosine similarity)
 - Temporal decay: scores *= 1 / (1 + days_ago / half_life)
 - Contrastive (second matmul against negative query)
 - MMR diversity (iterative pairwise selection, returns MMR scores)
+- Centroid (like:id1,id2) — query-by-example
+- Trajectory (from:TEXT to:TEXT) — directional search
 
 Hub/bridge boost moved to SQL: ORDER BY v.score * (1 + m.centrality)
-Eventually replaced by @structure query-local PageRank.
 
 SQL usage:
-    vec_search('_raw_chunks', 'auth')                    -- raw cosine
-    vec_search('_raw_chunks', 'auth', 'recent:7 diverse unlike:jwt')
-    vec_search('_raw_chunks', 'auth', 'kind:delegation community:12')
+    vec_ops('_raw_chunks', 'auth')                    -- raw cosine
+    vec_ops('_raw_chunks', 'auth', 'recent:7 diverse unlike:jwt')
+    vec_ops('_raw_chunks', 'auth', 'diverse', 'SELECT chunk_id FROM _types_message WHERE role = ''user''')
 
 Performance:
     1k docs:   0.1ms
@@ -47,17 +49,16 @@ def parse_modifiers(modifier_str: str) -> dict:
     """Parse a modifier string into modulation parameters.
 
     Tokens (space-separated, composable):
-        recent              temporal decay (cell-configured half-life)
-        recent:N            temporal decay with N-day half-life
-        unlike:TEXT         contrastive — demote similarity to TEXT
-        diverse             MMR diversity selection
-        limit:N             override default candidate limit
-        community:N         pre-filter to community ID
-        kind:TYPE           pre-filter to semantic kind
-        detect_communities  query-time Louvain on candidates, adds _community field
+        diverse              MMR diversity selection
+        recent[:N]           temporal decay (optional N-day half-life)
+        unlike:TEXT          contrastive — demote similarity to TEXT
+        like:id1,id2,...     centroid of example chunks
+        from:TEXT to:TEXT    trajectory — direction through embedding space
+        local_communities    per-query Louvain on candidates, adds _community
+        limit:N              candidate count (default 500)
 
-    Returns dict with keys: recent, recent_days, unlike, diverse,
-    limit, community, kind, detect_communities.
+    Dead tokens (silently ignored): kind:TYPE, community:N
+    Alias: detect_communities → local_communities
     Unknown tokens silently ignored (forward-compatible).
     """
     result = {
@@ -66,13 +67,24 @@ def parse_modifiers(modifier_str: str) -> dict:
         'unlike': None,
         'diverse': False,
         'limit': None,
-        'community': None,
-        'kind': None,
-        'detect_communities': False,
+        'like': None,
+        'trajectory_from': None,
+        'trajectory_to': None,
+        'local_communities': False,
     }
 
     if not modifier_str:
         return result
+
+    # Extract trajectory (spans tokens) before splitting
+    traj_match = re.search(
+        r'from:(.*?)\s+to:(.*?)(?=\s+(?:diverse|recent:|unlike:|like:|limit:|local_communities|detect_communities)\b|\s*$)',
+        modifier_str
+    )
+    if traj_match:
+        result['trajectory_from'] = traj_match.group(1).strip()
+        result['trajectory_to'] = traj_match.group(2).strip()
+        modifier_str = modifier_str[:traj_match.start()] + modifier_str[traj_match.end():]
 
     for token in modifier_str.strip().split():
         if token == 'diverse':
@@ -92,15 +104,11 @@ def parse_modifiers(modifier_str: str) -> dict:
                 result['limit'] = int(token.split(':', 1)[1])
             except ValueError:
                 pass
-        elif token.startswith('community:'):
-            try:
-                result['community'] = int(token.split(':', 1)[1])
-            except ValueError:
-                pass
-        elif token.startswith('kind:'):
-            result['kind'] = token.split(':', 1)[1]
-        elif token == 'detect_communities':
-            result['detect_communities'] = True
+        elif token.startswith('like:'):
+            result['like'] = token.split(':', 1)[1].split(',')
+        elif token in ('local_communities', 'detect_communities'):
+            result['local_communities'] = True
+        # kind: and community: silently ignored (dead tokens)
 
     return result
 
@@ -127,9 +135,6 @@ class VectorCache:
         self.dims: int = 0
         # Column arrays for landscape modulation (N,), aligned with self.ids
         self.timestamps: Optional[np.ndarray] = None    # (N,) float64, epoch seconds
-        # Pre-filter arrays (N,), aligned with self.ids
-        self.community_ids: Optional[np.ndarray] = None  # (N,) int32, -1 = unmapped
-        self.kinds: Optional[np.ndarray] = None           # (N,) object, '' = unmapped
 
     def load_from_db(self, db, table: str, embedding_col: str = 'embedding',
                      id_col: str = 'id') -> 'VectorCache':
@@ -179,12 +184,9 @@ class VectorCache:
         return self
 
     def load_columns(self, db, table: str, id_col: str = 'id'):
-        """Load modulation column arrays from DB, aligned with self.ids.
+        """Load timestamp arrays from DB, aligned with self.ids.
 
-        Loads centrality (min-max normalized to 0-1) and timestamps for each
-        vector in the cache. Sources without graph data get centrality=0.
-        Chunks without timestamps get timestamp=0.
-
+        Timestamps used for recent:N temporal decay modulation.
         Must be called AFTER load_from_db().
         """
         if not self.ids:
@@ -208,40 +210,9 @@ class VectorCache:
         except Exception as e:
             print(f"VectorCache: timestamps load failed: {e}", file=sys.stderr)
 
-        # --- Graph columns: community_id (for pre-filter mask) ---
-        self.community_ids = np.full(N, -1, dtype=np.int32)
 
-        try:
-            rows = db.execute("""
-                SELECT e.chunk_id, g.community_id
-                FROM _edges_source e
-                JOIN _enrich_source_graph g ON e.source_id = g.source_id
-                WHERE g.community_id IS NOT NULL
-            """).fetchall()
-            for row in rows:
-                idx = self._id_to_idx.get(row[0])
-                if idx is not None:
-                    self.community_ids[idx] = int(row[1])
-        except Exception as e:
-            print(f"VectorCache: community_ids load failed: {e}", file=sys.stderr)
-
-        # --- Kinds: chunk -> _enrich_types ---
-        self.kinds = np.empty(N, dtype=object)
-        self.kinds[:] = ''
-        try:
-            rows = db.execute("""
-                SELECT chunk_id, semantic_role
-                FROM _enrich_types
-                WHERE semantic_role IS NOT NULL
-            """).fetchall()
-            for row in rows:
-                idx = self._id_to_idx.get(row[0])
-                if idx is not None:
-                    self.kinds[idx] = row[1]
-        except Exception as e:
-            print(f"VectorCache: kinds load failed: {e}", file=sys.stderr)
-
-    def search(self, query_vec: np.ndarray, *, not_like_vec: np.ndarray = None,
+    def search(self, query_vec: np.ndarray, *, pre_filter_ids: set = None,
+               not_like_vec: np.ndarray = None,
                diverse: bool = False, limit: int = 10, oversample: int = 200,
                mask: np.ndarray = None, threshold: float = 0.0,
                mmr_lambda: float = 0.7,
@@ -250,16 +221,11 @@ class VectorCache:
         """
         Search for similar vectors with optional landscape modulations.
 
-        Landscape modulations (applied on full N array before top-k):
-        1. Matrix multiply: corpus-wide cosine similarity
-        2. Temporal decay: scores *= 1 / (1 + days_ago / half_life)
-        3. Contrastive (not_like_vec): penalize similarity to negative query
-        4. MMR diversity: iterative selection maximizing relevance - redundancy
-
-        Hub/bridge boost moved to SQL: ORDER BY v.score * (1 + m.centrality)
+        Pipeline: SQL pre-filter → numpy operations → SQL composition.
 
         Args:
             query_vec: Query embedding (dims,)
+            pre_filter_ids: Set of chunk IDs to restrict search (from SQL 4th arg)
             not_like_vec: Negative query embedding for contrastive
             diverse: Enable MMR diversity selection
             limit: Max results to return
@@ -269,7 +235,7 @@ class VectorCache:
             mmr_lambda: Relevance vs diversity tradeoff (0-1)
             modifiers: Parsed modifier dict from parse_modifiers()
             config: Cell config dict from _meta (vec:* keys)
-            embed_fn: Embedding function for unlike:TEXT in modifiers
+            embed_fn: Embedding function for unlike:TEXT and from:to: in modifiers
 
         Returns:
             List of {id, score} sorted by score desc
@@ -290,29 +256,75 @@ class VectorCache:
         if query_norm > 0:
             query_vec = query_vec / query_norm
 
+        # === CENTROID: like:id1,id2,... replaces or blends with query_vec ===
+        like_ids = modifiers.get('like') if modifiers else None
+        if like_ids:
+            valid_indices = [self._id_to_idx[id_] for id_ in like_ids if id_ in self._id_to_idx]
+            if not valid_indices:
+                return []  # All IDs unknown
+            vecs = self.matrix[np.array(valid_indices)]
+            centroid = vecs.mean(axis=0)
+            c_norm = np.linalg.norm(centroid)
+            if c_norm > 0:
+                centroid /= c_norm
+            # If query text was provided, blend 50/50; otherwise pure centroid
+            if query_norm > 0:
+                query_vec = 0.5 * query_vec + 0.5 * centroid
+                q_norm = np.linalg.norm(query_vec)
+                if q_norm > 0:
+                    query_vec /= q_norm
+            else:
+                query_vec = centroid
+
+        # === TRAJECTORY: from:TEXT to:TEXT replaces query_vec with direction ===
+        traj_from = modifiers.get('trajectory_from') if modifiers else None
+        traj_to = modifiers.get('trajectory_to') if modifiers else None
+        if traj_from and traj_to and embed_fn:
+            start_vec = np.squeeze(embed_fn(traj_from)).astype(np.float32)
+            end_vec = np.squeeze(embed_fn(traj_to)).astype(np.float32)
+            direction = end_vec - start_vec
+            d_norm = np.linalg.norm(direction)
+            if d_norm > 0:
+                direction /= d_norm
+            query_vec = direction  # Replace query vector with direction
+
+        # === SQL PRE-FILTER: fancy-index into warm matrix ===
+        if pre_filter_ids is not None:
+            indices = np.array([
+                self._id_to_idx[id_] for id_ in pre_filter_ids
+                if id_ in self._id_to_idx
+            ], dtype=np.int64)
+            if len(indices) == 0:
+                return []
+            # Slice warm matrix — subset arrays for all downstream code
+            active_matrix = self.matrix[indices]
+            active_ids = [self.ids[i] for i in indices]
+            active_timestamps = self.timestamps[indices] if self.timestamps is not None else None
+            active_id_to_idx = {id_: i for i, id_ in enumerate(active_ids)}
+        else:
+            # Full corpus path
+            active_matrix = self.matrix
+            active_ids = self.ids
+            active_timestamps = self.timestamps
+            active_id_to_idx = self._id_to_idx
+            indices = None
+
         # 1. Matrix multiply — all similarities at once
-        similarities = self.matrix @ query_vec
+        similarities = active_matrix @ query_vec
 
-        # === PRE-FILTER MASKS (exclude non-matching before modulations) ===
-        if modifiers:
-            if modifiers.get('community') is not None and self.community_ids is not None:
-                similarities[self.community_ids != modifiers['community']] = -np.inf
-            if modifiers.get('kind') and self.kinds is not None:
-                similarities[self.kinds != modifiers['kind']] = -np.inf
-
-        # === LANDSCAPE MODULATIONS (full N array, before candidate selection) ===
+        # === LANDSCAPE MODULATIONS (on active array, before candidate selection) ===
         if modifiers:
             cfg = config or {}
 
             # Temporal decay: scores *= 1 / (1 + days_ago / half_life)
-            if modifiers.get('recent') and self.timestamps is not None:
-                if np.any(self.timestamps > 0):
+            if modifiers.get('recent') and active_timestamps is not None:
+                if np.any(active_timestamps > 0):
                     half_life = float(
                         modifiers.get('recent_days')
                         or cfg.get('vec:recent:half_life', 30)
                     )
                     days_ago = np.maximum(
-                        (time.time() - self.timestamps) / 86400.0, 0.0
+                        (time.time() - active_timestamps) / 86400.0, 0.0
                     )
                     similarities = similarities * (1.0 / (1.0 + days_ago / half_life))
 
@@ -328,7 +340,12 @@ class VectorCache:
 
         # Apply mask
         if mask is not None:
-            similarities = np.where(mask, similarities, -np.inf)
+            if pre_filter_ids is not None:
+                # Mask is for full corpus — remap to subset
+                sub_mask = mask[indices]
+                similarities = np.where(sub_mask, similarities, -np.inf)
+            else:
+                similarities = np.where(mask, similarities, -np.inf)
 
         # Apply threshold
         if threshold > 0:
@@ -340,7 +357,7 @@ class VectorCache:
             nl_norm = np.linalg.norm(not_like_vec)
             if nl_norm > 0:
                 not_like_vec = not_like_vec / nl_norm
-            neg_sims = self.matrix @ not_like_vec
+            neg_sims = active_matrix @ not_like_vec
             similarities -= 0.5 * neg_sims
 
         # Get candidate pool
@@ -354,20 +371,17 @@ class VectorCache:
         # Filter -inf
         top_indices = [i for i in top_indices if similarities[i] != -np.inf]
 
-        # Detect communities on candidate set (query-time Louvain)
+        # Local communities on candidate set (query-time Louvain)
         detected_communities = None
-        if modifiers and modifiers.get('detect_communities') and len(top_indices) >= 3:
+        local_comm_key = 'local_communities' if modifiers and 'local_communities' in modifiers else 'detect_communities'
+        if modifiers and modifiers.get(local_comm_key) and len(top_indices) >= 3:
             import networkx as nx
-            # Cap at limit (not oversample) — communities beyond final results are wasted
             comm_pool = min(len(top_indices), limit)
             cand_indices = np.array(top_indices[:comm_pool])
-            cand_vecs = self.matrix[cand_indices]
+            cand_vecs = active_matrix[cand_indices]
             sims = cand_vecs @ cand_vecs.T
-            # Build graph with vectorized edge extraction
-            # Threshold 0.65: candidates are pre-selected (already similar to query),
-            # so intra-similarity is high — 0.5 creates near-complete graphs
-            threshold = 0.65
-            rows, cols = np.where(np.triu(sims > threshold, k=1))
+            comm_threshold = 0.65
+            rows, cols = np.where(np.triu(sims > comm_threshold, k=1))
             G = nx.Graph()
             G.add_nodes_from(range(len(cand_indices)))
             G.add_weighted_edges_from(
@@ -382,48 +396,49 @@ class VectorCache:
 
         # 3. MMR diversity — iterative selection (returns MMR scores)
         if diverse and len(top_indices) > limit:
-            mmr_results = self._mmr_select(top_indices, similarities, limit,
-                                           lambda_=mmr_lambda)
-            results = [{'id': self.ids[idx], 'score': float(score)}
+            mmr_results = self._mmr_select_on(
+                top_indices, similarities, active_matrix, limit, lambda_=mmr_lambda)
+            results = [{'id': active_ids[idx], 'score': float(score)}
                        for idx, score in mmr_results]
             if detected_communities is not None:
-                # Map selected indices back to candidate positions
                 cand_list = list(cand_indices)
                 for r in results:
-                    orig_idx = self._id_to_idx.get(r['id'])
+                    orig_idx = active_id_to_idx.get(r['id'])
                     if orig_idx is not None and orig_idx in cand_list:
                         pos = cand_list.index(orig_idx)
                         r['_community'] = detected_communities.get(pos)
             return results
 
         # Build results (cosine/modulated scores)
-        results = [{'id': self.ids[idx], 'score': float(similarities[idx])}
+        results = [{'id': active_ids[idx], 'score': float(similarities[idx])}
                    for idx in top_indices[:limit]]
         if detected_communities is not None:
             cand_list = list(cand_indices)
             for r in results:
-                orig_idx = self._id_to_idx.get(r['id'])
+                orig_idx = active_id_to_idx.get(r['id'])
                 if orig_idx is not None and orig_idx in cand_list:
                     pos = cand_list.index(orig_idx)
                     r['_community'] = detected_communities.get(pos)
         return results
 
-    def _mmr_select(self, candidates: list, similarities: np.ndarray,
-                    k: int, lambda_: float = 0.7) -> list:
+    def _mmr_select_on(self, candidates: list, similarities: np.ndarray,
+                       matrix: np.ndarray, k: int, lambda_: float = 0.7) -> list:
         """MMR: iteratively select for relevance minus redundancy.
 
-        Returns list of (index, mmr_score) tuples. MMR scores monotonically
-        decrease by construction, so ORDER BY score DESC in SQL preserves
-        the diversity ordering.
+        Args:
+            candidates: indices into the active arrays (not necessarily self.matrix)
+            similarities: score array aligned with active arrays
+            matrix: the active matrix (full or pre-filtered subset)
+            k: number of items to select
+            lambda_: relevance vs diversity tradeoff (0-1)
 
-        Vectorized: pre-computes candidate similarity matrix once,
-        then uses numpy max() per iteration instead of Python loops.
+        Returns list of (index, mmr_score) tuples.
         """
         if not candidates:
             return []
 
         # Pre-compute pairwise similarities for all candidates (one matmul)
-        cand_vecs = self.matrix[candidates]  # (n_cand, dims)
+        cand_vecs = matrix[candidates]  # (n_cand, dims)
         cand_sims = cand_vecs @ cand_vecs.T  # (n_cand, n_cand)
 
         n = len(candidates)
@@ -502,23 +517,23 @@ class VectorCache:
         return f"VectorCache({self.size} vectors, {self.dims}d, {self.memory_mb:.1f}MB)"
 
 
-def materialize_vec_search(db, sql: str) -> str:
-    """Transparently materialize vec_search() as a temp table.
+def materialize_vec_ops(db, sql: str) -> str:
+    """Transparently materialize vec_ops() as a temp table.
 
-    AI writes:  FROM vec_search('_raw_chunks', 'query') v
+    AI writes:  FROM vec_ops('_raw_chunks', 'query') v
     Becomes:    FROM _vec_results v  (temp table with id TEXT, score REAL)
 
     Skips if wrapped in json_each() (backward compat).
-    Only triggers when vec_search appears as a table source (after FROM/JOIN).
+    Only triggers when vec_ops appears as a table source (after FROM/JOIN).
     """
     lower = sql.lower()
 
-    # json_each(vec_search(...)) — explicit pattern, don't touch
+    # json_each(vec_ops(...)) — explicit pattern, don't touch
     if 'json_each' in lower:
         return sql
 
-    # Find vec_search(...) call — balanced paren matching for quoted strings
-    start = re.search(r'vec_search\s*\(', sql)
+    # Find vec_ops(...) call — balanced paren matching for quoted strings
+    start = re.search(r'vec_ops\s*\(', sql)
     if not start:
         return sql
 
@@ -550,7 +565,7 @@ def materialize_vec_search(db, sql: str) -> str:
     if end_pos is None:
         return sql
 
-    # Execute the vec_search call as a scalar to get JSON
+    # Execute the vec_ops call as a scalar to get JSON
     call_expr = sql[start.start():end_pos]
     try:
         row = db.execute(f"SELECT {call_expr}").fetchone()
@@ -560,9 +575,15 @@ def materialize_vec_search(db, sql: str) -> str:
     except Exception:
         return sql  # let original SQL fail naturally
 
+    # Handle error JSON or empty results from vec_ops
+    if not isinstance(results, list):
+        return sql  # vec_ops returned {"error": "..."}, let original SQL show it
+    if not results:
+        return sql
+
     # Populate temp table (unique name per call for HTTP concurrency)
     tmp_name = f"_vec_results_{uuid.uuid4().hex[:8]}"
-    has_community = results and '_community' in results[0]
+    has_community = '_community' in results[0]
     if has_community:
         db.execute(f"CREATE TEMP TABLE [{tmp_name}] (id TEXT PRIMARY KEY, score REAL, _community INT)")
         db.executemany(
@@ -571,18 +592,17 @@ def materialize_vec_search(db, sql: str) -> str:
         )
     else:
         db.execute(f"CREATE TEMP TABLE [{tmp_name}] (id TEXT PRIMARY KEY, score REAL)")
-        if results:
-            db.executemany(
-                f"INSERT INTO [{tmp_name}] VALUES (?, ?)",
-                [(r['id'], r['score']) for r in results]
-            )
+        db.executemany(
+            f"INSERT INTO [{tmp_name}] VALUES (?, ?)",
+            [(r['id'], r['score']) for r in results]
+        )
 
-    # Rewrite: replace vec_search(...) with temp table
+    # Rewrite: replace vec_ops(...) with temp table
     return sql[:start.start()] + tmp_name + sql[end_pos:]
 
 
-def register_vec_search(conn, caches: dict, embed_fn, cell_config: dict = None):
-    """Register vec_search as a SQL-callable function with modifier support.
+def register_vec_ops(conn, caches: dict, embed_fn, cell_config: dict = None):
+    """Register vec_ops as a SQL-callable function with modifier support.
 
     Args:
         conn: SQLite connection
@@ -591,34 +611,53 @@ def register_vec_search(conn, caches: dict, embed_fn, cell_config: dict = None):
         cell_config: dict of vec:* keys from _meta (optional)
 
     SQL usage:
-        vec_search('_raw_chunks', 'auth')                              -- raw cosine
-        vec_search('_raw_chunks', 'auth', 'recent:7 diverse unlike:jwt')
+        vec_ops('_raw_chunks', 'auth')                              -- raw cosine
+        vec_ops('_raw_chunks', 'auth', 'recent:7 diverse unlike:jwt')
     """
     import json
     cfg = cell_config or {}
 
-    def vec_search_fn(table, query_text, modifier_str=None):
+    def vec_ops_fn(*args):
+        if len(args) < 2:
+            return json.dumps({"error": "vec_ops requires at least 2 args: table, query_text"})
+
+        table = args[0]
+        query_text = args[1]
+        modifier_str = args[2] if len(args) > 2 else None
+        pre_filter_sql = args[3] if len(args) > 3 else None
+
         cache = caches.get(table)
         if cache is None or cache.matrix is None:
             return json.dumps([])
 
         # Diagnostic mode: return cache state
         if query_text == '__diag__':
-            unique_kinds = set(cache.kinds[:50].tolist()) if cache.kinds is not None else None
-            n_kinds_set = int((cache.kinds != '').sum()) if cache.kinds is not None else 0
-            n_comm_set = int((cache.community_ids != -1).sum()) if cache.community_ids is not None else 0
             return json.dumps({
                 'size': cache.size,
-                'has_kinds': cache.kinds is not None,
-                'kinds_populated': n_kinds_set,
-                'kinds_sample': list(unique_kinds) if unique_kinds else None,
-                'has_community_ids': cache.community_ids is not None,
-                'community_ids_populated': n_comm_set,
                 'has_timestamps': cache.timestamps is not None,
             })
 
-        query_vec = np.squeeze(embed_fn(query_text))
         modifiers = parse_modifiers(modifier_str) if modifier_str else None
+
+        # SQL pre-filter: execute 4th arg to get chunk IDs
+        pre_filter_ids = None
+        if pre_filter_sql:
+            try:
+                rows = conn.execute(pre_filter_sql).fetchall()
+                pre_filter_ids = {str(r[0]) for r in rows}
+            except Exception as e:
+                return json.dumps({"error": f"vec_ops pre-filter SQL failed: {e}"})
+
+        # Handle NULL query text (for like: or from:to: tokens)
+        if query_text is None:
+            # Check if modifiers provide an alternative query vector
+            if modifiers and (modifiers.get('like') or modifiers.get('trajectory_from')):
+                # Use a zero vector as placeholder — centroid/trajectory will replace it
+                query_vec = np.zeros(cache.dims, dtype=np.float32)
+            else:
+                return json.dumps({"error": "vec_ops: query_text is NULL and no like: or from:to: token"})
+        else:
+            query_vec = np.squeeze(embed_fn(query_text))
 
         limit = 500
         if modifiers and modifiers.get('limit'):
@@ -626,6 +665,7 @@ def register_vec_search(conn, caches: dict, embed_fn, cell_config: dict = None):
 
         results = cache.search(
             query_vec,
+            pre_filter_ids=pre_filter_ids,
             modifiers=modifiers,
             config=cfg,
             embed_fn=embed_fn,
@@ -639,4 +679,4 @@ def register_vec_search(conn, caches: dict, embed_fn, cell_config: dict = None):
             for r in results
         ])
 
-    conn.create_function("vec_search", -1, vec_search_fn)
+    conn.create_function("vec_ops", -1, vec_ops_fn)

@@ -3,7 +3,7 @@
 FlexSearch MCP Server — one tool, SQL endpoint.
 
 The AI writes SQL. The server executes it read-only.
-vec_search registered as a function for semantic queries.
+vec_ops registered as a function for semantic queries.
 
 Usage:
     python -m flexsearch.mcp_server                          # stdio (Claude Code)
@@ -68,7 +68,7 @@ def _db_mtime(name: str) -> float:
 
 @contextmanager
 def get_cell(name: str):
-    """Open a fresh connection to a cell. Registers vec_search UDF if cached.
+    """Open a fresh connection to a cell. Registers vec_ops UDF if cached.
 
     Yields None if cell doesn't exist on disk.
     Fresh connection every call = always see latest data.
@@ -119,12 +119,12 @@ def get_cell(name: str):
 
 
 def _register_udf(db: sqlite3.Connection, state: dict):
-    """Register vec_search UDF on a connection using cached VectorCache."""
+    """Register vec_ops UDF on a connection using cached VectorCache."""
     try:
-        from flexsearch.retrieve.vec_search import register_vec_search
+        from flexsearch.retrieve.vec_ops import register_vec_ops
         embedder = _get_embedder()
         if embedder:
-            register_vec_search(db, state['caches'], embedder.encode, state['config'])
+            register_vec_ops(db, state['caches'], embedder.encode, state['config'])
     except ImportError:
         pass
 
@@ -174,7 +174,7 @@ def _get_embedder():
 def _build_vec_state(name: str, db: sqlite3.Connection) -> dict | None:
     """Build VectorCache state for a cell. Returns state dict or None."""
     try:
-        from flexsearch.retrieve.vec_search import VectorCache
+        from flexsearch.retrieve.vec_ops import VectorCache
     except ImportError:
         return None
 
@@ -258,9 +258,9 @@ def execute_query(db: sqlite3.Connection, query: str) -> str:
         if upper.startswith(kw):
             return json.dumps({"error": f"Write operations not allowed: {kw}"})
 
-    # Materialize vec_search() table sources into temp tables
-    from flexsearch.retrieve.vec_search import materialize_vec_search
-    sql = materialize_vec_search(db, sql)
+    # Materialize vec_ops() table sources into temp tables
+    from flexsearch.retrieve.vec_ops import materialize_vec_ops
+    sql = materialize_vec_ops(db, sql)
 
     try:
         rows = db.execute(sql).fetchall()
@@ -294,33 +294,49 @@ def build_instructions() -> str:
         "START: query=\"@orient\" for cell schema, view columns, graph intelligence, and presets.",
         "",
         "QUERY PATTERN:",
-        "  CRITICAL: vec_search is a SQL table function. Always use inside SELECT ... FROM.",
-        "  vec_search produces candidates. SQL composes them with everything else.",
+        "  CRITICAL: vec_ops is a SQL table function. Always use inside SELECT ... FROM.",
+        "  vec_ops produces candidates. SQL composes them with everything else.",
         "",
         "  SELECT v.id, v.score, m.content",
-        "  FROM vec_search('_raw_chunks', 'authentication', 'diverse recent:7') v",
+        "  FROM vec_ops('_raw_chunks', 'authentication', 'diverse recent:7') v",
         "  JOIN messages m ON v.id = m.id",
         "  ORDER BY v.score * (1 + m.centrality) DESC",
         "  LIMIT 10",
         "",
         "  _raw_chunks is the embedding table (every cell).",
         "  JOIN view varies by cell type: messages (claude_code), sections (doc-pac).",
-        "  v.* = vec_search output.  m.* = metadata + graph intelligence.",
+        "  v.* = vec_ops output.  m.* = metadata + graph intelligence.",
         "",
-        "vec_search TOKENS (3rd arg, space-separated, all optional):",
-        "  community:N         filter to global community before scoring",
-        "  kind:TYPE           filter to semantic kind before scoring",
-        "  limit:N             candidate count (default 500)",
+        "vec_ops TOKENS (3rd arg, space-separated, all optional):",
         "  diverse             MMR diversity selection",
         "  recent[:N]          temporal decay (optional N-day half-life)",
         "  unlike:TEXT         contrastive — demote similarity to TEXT",
-        "  detect_communities  adds _community column (per-query Louvain on candidates)",
+        "  like:id1,id2,...    centroid of example chunks — \"more like these\"",
+        "  from:TEXT to:TEXT   trajectory search — direction through embedding space",
+        "  local_communities   adds _community column (per-query Louvain on candidates)",
+        "  limit:N             candidate count (default 500)",
         "",
         "  No tokens = raw cosine similarity. Tokens compose freely:",
-        "  vec_search('_raw_chunks', 'auth', 'diverse unlike:jwt community:3 recent:7')",
+        "  vec_ops('_raw_chunks', 'auth', 'diverse unlike:jwt recent:7')",
+        "",
+        "PRE-FILTER (4th arg):",
+        "  Any SQL returning chunk IDs. Restricts which chunks compete.",
+        "  vec_ops('_raw_chunks', 'auth', 'diverse recent:7',",
+        "    'SELECT chunk_id FROM _types_message WHERE role = ''user'''",
+        "  )",
+        "",
+        "  Compound:",
+        "  vec_ops('_raw_chunks', 'auth', 'diverse',",
+        "    'SELECT t.chunk_id FROM _types_message t",
+        "     JOIN _edges_source e ON t.chunk_id = e.chunk_id",
+        "     JOIN _enrich_source_graph g ON e.source_id = g.source_id",
+        "     WHERE t.role = ''user'' AND g.community_id = 3'",
+        "  )",
         "",
         "  -- Filter to user prompts only (essential for mining human voice):",
-        "  vec_search('_raw_chunks', 'auth', 'kind:prompt diverse')",
+        "  vec_ops('_raw_chunks', 'auth', 'diverse',",
+        "    'SELECT chunk_id FROM _types_message WHERE role = ''user'''",
+        "  )",
         "",
         "ENRICHMENT COLUMNS:",
         "  All cells (source graph):",
@@ -329,7 +345,7 @@ def build_instructions() -> str:
         "  claude_code only (claude_code enrichments):",
         "    file_centrality, file_is_hub, file_community_id       file co-edit graph",
         "    agents_spawned, is_orchestrator, delegation_depth      delegation graph",
-        "    kind, action, target_file, timestamp, project          chunk-level",
+        "    action, target_file, timestamp, project                  chunk-level",
         "",
         "  Run @orient on any cell to see its full schema and available columns.",
         "",
@@ -337,13 +353,13 @@ def build_instructions() -> str:
         "  ORDER BY v.score * (1 + m.centrality) DESC         -- hub-boosted ranking",
         "  WHERE m.community_id = 3                            -- global community (stable)",
         "  WHERE v._community = 2                              -- query-local (per-query, ephemeral)",
-        "  GROUP BY v._community                               -- theme survey (needs detect_communities)",
+        "  GROUP BY v._community                               -- theme survey (needs local_communities)",
         "  WHERE m.is_orchestrator = 1 AND m.file_is_hub = 1   -- cross-dimension (claude_code only)",
         "",
         "HYBRID (FTS + semantic + graph):",
-        "  vec_search for semantic candidates, chunks_fts MATCH for keywords,",
+        "  vec_ops for semantic candidates, chunks_fts MATCH for keywords,",
         "  WHERE is_hub = 1 ORDER BY centrality DESC for graph intelligence.",
-        "  Plain SQL works without vec_search for exact filters (WHERE project = 'X').",
+        "  Plain SQL works without vec_ops for exact filters (WHERE project = 'X').",
         "",
         "ORIENTATION (manual discovery):",
         "  SELECT value FROM _meta WHERE key='description'",
@@ -382,7 +398,7 @@ def _build_tool_schema() -> dict:
         "properties": {
             "query": {
                 "type": "string",
-                "description": "SQL query, @preset name, or vec_search expression",
+                "description": "SQL query, @preset name, or vec_ops expression",
             },
             "cell": {
                 "type": "string",
