@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Rebuild all enrichments on thread cell with noise filters.
+"""Rebuild all enrichments on claude_code cell with noise filters.
 
 Runs: source_graph -> session_summary -> file_graph + delegation_graph
 Uses module configs from flexsearch.modules.claude_code.manage.*
@@ -18,9 +18,9 @@ from flexsearch.manage.meditate import build_similarity_graph, compute_scores, p
 from flexsearch.modules.claude_code.manage.noise import graph_filter_sql
 
 from flexsearch.registry import CELLS_ROOT, resolve_cell
-THREAD_DB = resolve_cell('thread') or (CELLS_ROOT / 'thread' / 'main.db')
+CLAUDE_CODE_DB = resolve_cell('claude_code') or (CELLS_ROOT / 'claude_code' / 'main.db')
 
-# Thread corpus: median pairwise similarity is 0.61 at threshold 0.5 -> 78% density.
+# claude_code corpus: median pairwise similarity is 0.61 at threshold 0.5 -> 78% density.
 # 0.65 gives 39% density — meaningful topology without near-complete graph.
 GRAPH_THRESHOLD = 0.65
 
@@ -149,8 +149,8 @@ def rebuild_delegation_graph(db):
 
 def main():
     t_total = time.time()
-    db = open_cell(str(THREAD_DB))
-    print(f'Opened: {THREAD_DB}\n')
+    db = open_cell(str(CLAUDE_CODE_DB))
+    print(f'Opened: {CLAUDE_CODE_DB}\n')
     sys.stdout.flush()
 
     rebuild_source_graph(db)

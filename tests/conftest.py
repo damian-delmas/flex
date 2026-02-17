@@ -49,7 +49,7 @@ CREATE INDEX idx_es_chunk ON _edges_source(chunk_id);
 CREATE INDEX idx_es_source ON _edges_source(source_id);
 
 -- TYPES LAYER (immutable COMPILE classification — pipeline signature)
--- Doc-pac pipeline: _types_docpac. Thread pipeline: _types_message.
+-- Doc-pac pipeline: _types_docpac. Claude Code pipeline: _types_message.
 CREATE TABLE _types_docpac (
     chunk_id TEXT PRIMARY KEY,
     temporal TEXT,
@@ -108,8 +108,8 @@ CREATE TRIGGER raw_chunks_au AFTER UPDATE ON _raw_chunks BEGIN
 END;
 """
 
-# Thread-specific tables (module additions)
-THREAD_MODULE_DDL = """
+# Claude Code-specific tables (module additions)
+CLAUDE_CODE_MODULE_DDL = """
 -- Tool operations (1:1, PK on chunk_id — safe for view)
 CREATE TABLE _edges_tool_ops (
     chunk_id TEXT PRIMARY KEY,
@@ -273,12 +273,12 @@ def qmem_cell():
 
 
 @pytest.fixture
-def thread_cell():
-    """In-memory cell with thread-specific module tables (full schema)."""
+def claude_code_cell():
+    """In-memory cell with claude_code-specific module tables (full schema)."""
     conn = sqlite3.connect(':memory:')
     conn.row_factory = sqlite3.Row
     conn.executescript(CHUNK_ATOM_DDL)
-    conn.executescript(THREAD_MODULE_DDL)
+    conn.executescript(CLAUDE_CODE_MODULE_DDL)
 
     # Populate _meta with view renames
     meta = [

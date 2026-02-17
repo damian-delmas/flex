@@ -142,17 +142,17 @@ class TestRegenerateViews:
             assert view_count <= chunk_count, \
                 f"View '{view_name}' has {view_count} rows but only {chunk_count} chunks"
 
-    def test_applies_meta_renames(self, thread_cell):
+    def test_applies_meta_renames(self, claude_code_cell):
         """Views should use domain vocabulary from _meta renames."""
         from flexsearch.core import regenerate_views
-        regenerate_views(thread_cell)
+        regenerate_views(claude_code_cell)
         # Check that 'action' appears as a column (renamed from tool_name)
-        views = thread_cell.execute(
+        views = claude_code_cell.execute(
             "SELECT name FROM sqlite_master WHERE type='view'"
         ).fetchall()
         found_rename = False
         for (view_name,) in views:
-            info = thread_cell.execute(f"PRAGMA table_info({view_name})").fetchall()
+            info = claude_code_cell.execute(f"PRAGMA table_info({view_name})").fetchall()
             col_names = {r[1] for r in info}
             if 'action' in col_names or 'importance' in col_names:
                 found_rename = True

@@ -20,7 +20,7 @@ from flexsearch.modules.claude_code.manage.delegation_graph import (
 )
 
 from flexsearch.registry import CELLS_ROOT, resolve_cell
-THREAD_DB = resolve_cell('thread') or (CELLS_ROOT / 'thread' / 'main.db')
+CLAUDE_CODE_DB = resolve_cell('claude_code') or (CELLS_ROOT / 'claude_code' / 'main.db')
 
 
 def main():
@@ -29,8 +29,8 @@ def main():
     print("=" * 60)
 
     t_start = time.time()
-    db = open_cell(str(THREAD_DB))
-    print(f"\nOpened: {THREAD_DB}")
+    db = open_cell(str(CLAUDE_CODE_DB))
+    print(f"\nOpened: {CLAUDE_CODE_DB}")
 
     # Build graph
     print("\nBuilding delegation graph...")

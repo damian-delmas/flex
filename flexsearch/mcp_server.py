@@ -8,7 +8,7 @@ vec_search registered as a function for semantic queries.
 Usage:
     python -m flexsearch.mcp_server                          # stdio (Claude Code)
     python -m flexsearch.mcp_server --http --port 8080       # SSE  (claude.ai)
-    python -m flexsearch.mcp_server --cell thread --cell qmem # multi-cell
+    python -m flexsearch.mcp_server --cell claude_code --cell qmem # multi-cell
 """
 
 import asyncio
@@ -70,7 +70,7 @@ def get_cell(name: str):
 
     Yields None if cell doesn't exist on disk.
     Fresh connection every call = always see latest data.
-    Usage: with get_cell('thread') as db: ...
+    Usage: with get_cell('claude_code') as db: ...
     """
     p = _db_path(name)
     if not p.exists():
@@ -275,7 +275,9 @@ def execute_query(db: sqlite3.Connection, query: str) -> str:
 def build_instructions() -> str:
     """Build server instructions. The cell describes itself via @orient."""
     parts = [
-        "FlexSearch — SQL-first knowledge engine. Read-only SQL on knowledge cells.",
+        "FlexSearch indexes the USERS conversations and knowledge bases. These are in a SQLite DB called a 'cell'. Each cell contains either their AI Agent conversation history (Claude Code, Codex, Cursor, Kilo etc), their agentic development memories, project history and documentation or other knowledge. When the USER asks to 'flex' or to 'flexsearch' their conversations, memories, changes, documentation or knowledge they are referring to this tool.",
+        "",
+        "Read-only SQL on knowledge cells.",
         "",
         "CELLS:",
     ]
@@ -300,7 +302,7 @@ def build_instructions() -> str:
         "  LIMIT 10",
         "",
         "  _raw_chunks is the embedding table (every cell).",
-        "  JOIN view varies by cell type: messages (thread), sections (doc-pac).",
+        "  JOIN view varies by cell type: messages (claude_code), sections (doc-pac).",
         "  v.* = vec_search output.  m.* = metadata + graph intelligence.",
         "",
         "vec_search TOKENS (3rd arg, space-separated, all optional):",
@@ -322,7 +324,7 @@ def build_instructions() -> str:
         "  All cells (source graph):",
         "    centrality, is_hub, community_id (stable, full-corpus)",
         "",
-        "  thread only (claude_code enrichments):",
+        "  claude_code only (claude_code enrichments):",
         "    file_centrality, file_is_hub, file_community_id       file co-edit graph",
         "    agents_spawned, is_orchestrator, delegation_depth      delegation graph",
         "    kind, action, target_file, timestamp, project          chunk-level",
@@ -334,7 +336,7 @@ def build_instructions() -> str:
         "  WHERE m.community_id = 3                            -- global community (stable)",
         "  WHERE v._community = 2                              -- query-local (per-query, ephemeral)",
         "  GROUP BY v._community                               -- theme survey (needs detect_communities)",
-        "  WHERE m.is_orchestrator = 1 AND m.file_is_hub = 1   -- cross-dimension (thread only)",
+        "  WHERE m.is_orchestrator = 1 AND m.file_is_hub = 1   -- cross-dimension (claude_code only)",
         "",
         "HYBRID (FTS + semantic + graph):",
         "  vec_search for semantic candidates, chunks_fts MATCH for keywords,",
@@ -350,7 +352,7 @@ def build_instructions() -> str:
         "PRESETS (pass @name as query parameter):",
         "  @orient                           full cell orientation (start here)",
         "  @genealogy concept=X              trace concept lineage",
-        "  @sessions limit=N                 recent sessions (thread)",
+        "  @sessions limit=N                 recent sessions (claude_code)",
         "  SELECT name, description FROM _presets    discover all",
         "",
     ])
@@ -364,7 +366,8 @@ def build_instructions() -> str:
 def _build_tool_description() -> str:
     """Build tool description. Instructions carry the real context."""
     return (
-        "SQL-first knowledge engine. Each cell is a self-describing SQLite database "
+        "FlexSearch indexes the user's conversations and knowledge bases. "
+        "Each cell is a self-describing SQLite database "
         "with chunks, embeddings, and graph intelligence."
     )
 
@@ -382,8 +385,8 @@ def _build_tool_schema() -> dict:
             "cell": {
                 "type": "string",
                 "description": "Knowledge cell to query",
-                "default": "thread",
-                "enum": cell_list if cell_list else ["thread"],
+                "default": "claude_code",
+                "enum": cell_list if cell_list else ["claude_code"],
             },
         },
         "required": ["query"],
@@ -448,7 +451,7 @@ async def handle_call_tool(
         return [types.TextContent(type="text", text=json.dumps({"error": "Missing required argument: query"}))]
 
     query = arguments["query"]
-    cell = arguments.get("cell", "thread")
+    cell = arguments.get("cell", "claude_code")
 
     with get_cell(cell) as db:
         if db is None:

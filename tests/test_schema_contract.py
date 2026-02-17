@@ -52,12 +52,12 @@ class TestPrefixRule:
         pk_cols = [row[1] for row in info if row[5] == 1]
         assert pk_cols == ['key']
 
-    def test_thread_module_tables_have_valid_prefix(self, thread_cell):
-        for table in self._user_tables(thread_cell):
+    def test_claude_code_module_tables_have_valid_prefix(self, claude_code_cell):
+        for table in self._user_tables(claude_code_cell):
             if table in self.SYSTEM_TABLES:
                 continue
             assert any(table.startswith(p) for p in self.VALID_PREFIXES), \
-                f"Thread module table '{table}' has no valid prefix"
+                f"claude_code module table '{table}' has no valid prefix"
 
 
 # =============================================================================
@@ -70,11 +70,11 @@ class TestPKRule:
 
     # Tables that MUST have PK on chunk_id (1:1, in view)
     MUST_HAVE_PK = ['_types_docpac', '_enrich_types']
-    THREAD_MUST_HAVE_PK = ['_edges_tool_ops', '_types_message']
+    CLAUDE_CODE_MUST_HAVE_PK = ['_edges_tool_ops', '_types_message']
 
     # Tables that MUST NOT have PK on chunk_id (1:N, not in view)
     MUST_NOT_HAVE_PK = ['_edges_source']
-    THREAD_MUST_NOT_HAVE_PK = [
+    CLAUDE_CODE_MUST_NOT_HAVE_PK = [
         '_edges_file_identity', '_edges_repo_identity',
         '_edges_content_identity', '_edges_url_identity',
         '_edges_delegations', '_edges_soft_ops',
@@ -99,15 +99,15 @@ class TestPKRule:
             assert not self._has_pk_on_chunk_id(qmem_cell, table), \
                 f"Table '{table}' should NOT have PK on chunk_id (1:N)"
 
-    def test_thread_1_1_tables(self, thread_cell):
-        for table in self.THREAD_MUST_HAVE_PK:
-            assert self._has_pk_on_chunk_id(thread_cell, table), \
-                f"Thread table '{table}' should have PK on chunk_id"
+    def test_claude_code_1_1_tables(self, claude_code_cell):
+        for table in self.CLAUDE_CODE_MUST_HAVE_PK:
+            assert self._has_pk_on_chunk_id(claude_code_cell, table), \
+                f"claude_code table '{table}' should have PK on chunk_id"
 
-    def test_thread_1_n_tables(self, thread_cell):
-        for table in self.THREAD_MUST_NOT_HAVE_PK:
-            assert not self._has_pk_on_chunk_id(thread_cell, table), \
-                f"Thread table '{table}' should NOT have PK on chunk_id"
+    def test_claude_code_1_n_tables(self, claude_code_cell):
+        for table in self.CLAUDE_CODE_MUST_NOT_HAVE_PK:
+            assert not self._has_pk_on_chunk_id(claude_code_cell, table), \
+                f"claude_code table '{table}' should NOT have PK on chunk_id"
 
 
 # =============================================================================
@@ -299,15 +299,15 @@ class TestMeta:
         assert schema is not None
         assert schema[0] in ('chunk-atom', 'flat-tables')
 
-    def test_view_meta_convention(self, thread_cell):
+    def test_view_meta_convention(self, claude_code_cell):
         """View meta keys follow patterns:
            - view:{name}:rename:{raw_col} (4 parts, domain vocabulary)
            - view:{name}:level (3 parts, chunk|source)
         """
-        view_keys = thread_cell.execute(
+        view_keys = claude_code_cell.execute(
             "SELECT key, value FROM _meta WHERE key LIKE 'view:%'"
         ).fetchall()
-        assert len(view_keys) > 0, "Thread cell should have view meta keys"
+        assert len(view_keys) > 0, "claude_code cell should have view meta keys"
 
         has_rename = False
         has_level = False
@@ -426,9 +426,9 @@ class TestEmbeddings:
 class TestSelfDescription:
     """An AI reading sqlite_master + PRAGMA table_info learns the system."""
 
-    def test_sqlite_master_lists_all_tables(self, thread_cell):
+    def test_sqlite_master_lists_all_tables(self, claude_code_cell):
         """sqlite_master should list every table for AI discovery."""
-        tables = thread_cell.execute(
+        tables = claude_code_cell.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'chunks_fts%' "
             "ORDER BY name"
@@ -438,25 +438,25 @@ class TestSelfDescription:
         assert '_raw_chunks' in table_names
         assert '_raw_sources' in table_names
         assert '_meta' in table_names
-        # Thread module tables must be discoverable
+        # claude_code module tables must be discoverable
         assert '_edges_tool_ops' in table_names
         assert '_types_message' in table_names
 
-    def test_pragma_reveals_pk_constraints(self, thread_cell):
+    def test_pragma_reveals_pk_constraints(self, claude_code_cell):
         """PRAGMA table_info should reveal which tables are 1:1 vs 1:N."""
         # 1:1 table — AI sees pk=1 on chunk_id
-        info = thread_cell.execute("PRAGMA table_info(_edges_tool_ops)").fetchall()
+        info = claude_code_cell.execute("PRAGMA table_info(_edges_tool_ops)").fetchall()
         pk_col = [(r[1], r[5]) for r in info if r[5] == 1]
         assert pk_col == [('chunk_id', 1)]
 
         # 1:N table — AI sees no pk on chunk_id
-        info = thread_cell.execute("PRAGMA table_info(_edges_file_identity)").fetchall()
+        info = claude_code_cell.execute("PRAGMA table_info(_edges_file_identity)").fetchall()
         pk_col = [(r[1], r[5]) for r in info if r[5] == 1]
         assert pk_col == [], "1:N table should have no PK"
 
-    def test_prefix_reveals_lifecycle(self, thread_cell):
+    def test_prefix_reveals_lifecycle(self, claude_code_cell):
         """Table names should clearly indicate lifecycle via prefix."""
-        tables = thread_cell.execute(
+        tables = claude_code_cell.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'chunks_fts%'"
         ).fetchall()

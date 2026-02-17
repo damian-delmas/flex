@@ -35,7 +35,7 @@ from flexsearch.modules.claude_code.manage.summary import (
 )
 
 from flexsearch.registry import CELLS_ROOT, resolve_cell
-THREAD_DB = resolve_cell('thread') or (CELLS_ROOT / 'thread' / 'main.db')
+CLAUDE_CODE_DB = resolve_cell('claude_code') or (CELLS_ROOT / 'claude_code' / 'main.db')
 
 CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS _enrich_session_summary (
@@ -241,8 +241,8 @@ def main():
 
     t_start = time.time()
 
-    db = open_cell(str(THREAD_DB))
-    print(f"\nOpened: {THREAD_DB}")
+    db = open_cell(str(CLAUDE_CODE_DB))
+    print(f"\nOpened: {CLAUDE_CODE_DB}")
 
     # Eligible sessions — filter from module config
     eligible = db.execute(session_filter_sql()).fetchall()

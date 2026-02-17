@@ -474,7 +474,7 @@ class VectorCache:
         Example:
             mask = cache.get_mask_from_db(db, '_raw_chunks',
                 "doc_id IN (SELECT source_id FROM _edges_source WHERE project = ?)",
-                ('thread',))
+                ('claude_code',))
         """
         rows = db.execute(
             f"SELECT id FROM [{table}] WHERE {where}", params

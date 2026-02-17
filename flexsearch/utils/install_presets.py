@@ -6,7 +6,7 @@ Infrastructure utility — not a domain operation. Bakes filesystem presets
 
 Usage:
     python -m flexsearch.utils.install_presets           # all cells
-    python -m flexsearch.utils.install_presets thread     # specific cell
+    python -m flexsearch.utils.install_presets claude_code  # specific cell
 """
 import sqlite3
 import sys
@@ -20,15 +20,15 @@ GENERAL_DIR = PRESET_ROOT / "general"
 
 # Module-specific preset directories
 MODULE_ROOT = Path(__file__).resolve().parent.parent / "modules"
-THREAD_DIR = MODULE_ROOT / "claude_code" / "presets"
+CLAUDE_CODE_DIR = MODULE_ROOT / "claude_code" / "presets"
 
 # Cell paths
 from flexsearch.registry import CELLS_ROOT, resolve_cell
 
 # Which cells get which presets
 CELL_CONFIG = {
-    'thread': [GENERAL_DIR, THREAD_DIR],
-    'claude': [GENERAL_DIR, THREAD_DIR],
+    'claude_code': [GENERAL_DIR, CLAUDE_CODE_DIR],
+    'claude': [GENERAL_DIR, CLAUDE_CODE_DIR],
     'qmem': [GENERAL_DIR],
     'inventory': [GENERAL_DIR],
     'thread-codebase': [GENERAL_DIR],
@@ -82,7 +82,7 @@ def install_cell(cell_name: str, preset_dirs: list[Path] = None):
 
         conn.close()
     except sqlite3.OperationalError as e:
-        print(f"  {cell_name}: LOCKED ({e}) — retry after stopping thread-worker")
+        print(f"  {cell_name}: LOCKED ({e}) — retry after stopping flexsearch-worker")
 
 
 def install_all():
