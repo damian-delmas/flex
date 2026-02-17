@@ -487,30 +487,11 @@ def main():
         regenerate_views(db, views={'sections': 'chunk', 'documents': 'source'})
 
     # ═════════════════════════════════════════════════
-    # 10. ENRICH TYPES (heuristic pre-population)
+    # 10. _enrich_types: stopped writing heuristic values (Plan 9).
+    # AI queries doc_type + temporal directly via curated views.
+    # Table kept as reserved slot for future semantic classification.
     # ═════════════════════════════════════════════════
-    print("Pre-populating _enrich_types...")
-    db.execute("""
-        INSERT OR IGNORE INTO _enrich_types (chunk_id, semantic_role, confidence)
-        SELECT c.id,
-            CASE WHEN td.doc_type = 'changelog' THEN 'changelog'
-                 WHEN td.doc_type = 'architecture' THEN 'architecture'
-                 WHEN td.doc_type = 'design' THEN 'design'
-                 WHEN td.doc_type = 'plan' THEN 'plan'
-                 WHEN td.doc_type = 'testing' THEN 'testing'
-                 WHEN td.doc_type = 'ast' THEN 'code_artifact'
-                 ELSE 'prose'
-            END,
-            0.5
-        FROM _raw_chunks c
-        LEFT JOIN _types_docpac td ON c.id = td.chunk_id
-    """)
-    db.commit()
 
-    enrich_count = db.execute("SELECT COUNT(*) FROM _enrich_types").fetchone()[0]
-    print(f"Enriched {enrich_count} chunks with doc_type-based heuristics.")
-
-    # Regenerate views to pick up _enrich_types
     regenerate_views(db, views={'sections': 'chunk', 'documents': 'source'})
 
     # ═════════════════════════════════════════════════

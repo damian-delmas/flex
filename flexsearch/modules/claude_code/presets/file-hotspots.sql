@@ -6,7 +6,7 @@ SELECT
     target_file,
     COUNT(*) as total_ops,
     COUNT(DISTINCT source_id) as sessions,
-    GROUP_CONCAT(DISTINCT action) as tools
+    GROUP_CONCAT(DISTINCT tool_name) as tools
 FROM messages
 WHERE target_file IS NOT NULL
 GROUP BY target_file

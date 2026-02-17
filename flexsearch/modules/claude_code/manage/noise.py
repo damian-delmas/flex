@@ -40,11 +40,13 @@ def graph_filter_sql():
     """WHERE fragment for build_similarity_graph().
 
     Pass as: build_similarity_graph(db, where=graph_filter_sql())
-    Filters: min chunks, no warmups.
+    Filters: min chunks, no warmups, no agent children (Plan 9).
+    Unified with session_filter_sql() — same exclusion policy.
     """
     return """source_id IN (
         SELECT source_id FROM _edges_source
         GROUP BY source_id HAVING COUNT(*) >= {min_chunks}
-    ) AND source_id NOT IN (
+    ) AND source_id NOT LIKE 'agent-%'
+    AND source_id NOT IN (
         SELECT source_id FROM _raw_sources WHERE title = 'Warmup'
     )""".format(min_chunks=MIN_CHUNKS)

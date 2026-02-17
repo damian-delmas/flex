@@ -16,11 +16,11 @@ GROUP BY project
 ORDER BY sessions DESC LIMIT 10;
 
 -- @query: top_tools
-SELECT action, COUNT(*) as ops
+SELECT tool_name, COUNT(*) as ops
 FROM messages
-WHERE action IS NOT NULL
+WHERE tool_name IS NOT NULL
   AND timestamp > strftime('%s', 'now', '-' || :days || ' days')
-GROUP BY action
+GROUP BY tool_name
 ORDER BY ops DESC LIMIT 10;
 
 -- @query: hot_files

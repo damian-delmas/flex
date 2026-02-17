@@ -15,7 +15,7 @@ WHERE source_id LIKE '%' || :session || '%';
 
 -- @query: timeline
 SELECT
-    action,
+    tool_name,
     COALESCE(target_file, substr(content, 1, 60)) as target,
     datetime(timestamp, 'unixepoch', 'localtime') as ts
 FROM messages
@@ -25,11 +25,11 @@ LIMIT 100;
 
 -- @query: artifacts
 SELECT DISTINCT
-    action,
+    tool_name,
     target_file
 FROM messages
 WHERE source_id LIKE '%' || :session || '%'
-  AND action IN ('Write', 'Edit', 'MultiEdit')
+  AND tool_name IN ('Write', 'Edit', 'MultiEdit')
   AND target_file IS NOT NULL;
 
 -- @query: agents

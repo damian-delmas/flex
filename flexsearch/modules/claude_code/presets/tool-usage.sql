@@ -2,11 +2,11 @@
 -- @description: Tool usage breakdown across sessions
 
 SELECT
-    action as tool,
+    tool_name as tool,
     COUNT(*) as total,
     COUNT(DISTINCT source_id) as sessions,
     ROUND(COUNT(*) * 1.0 / COUNT(DISTINCT source_id), 1) as avg_per_session
 FROM messages
-WHERE action IS NOT NULL
-GROUP BY action
+WHERE tool_name IS NOT NULL
+GROUP BY tool_name
 ORDER BY total DESC;

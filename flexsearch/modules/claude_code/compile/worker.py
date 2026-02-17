@@ -5,7 +5,7 @@ FlexSearch Worker — Direct capture to chunk-atom cell.
 Writes to chunk-atom schema:
   _raw_chunks, _edges_source, _types_message, _edges_tool_ops,
   _edges_file_identity, _edges_repo_identity, _edges_url_identity,
-  _edges_delegations, _edges_soft_ops, _enrich_types
+  _edges_delegations, _edges_soft_ops
 
 Queue: SQLite (~/.flex/queue.db) table claude_code_pending
 Cell: resolved via flexsearch.registry
@@ -123,28 +123,6 @@ def update_source_stats(conn: sqlite3.Connection, session_id: str, chunk: dict):
         """, (chunk['content'][:200], session_id))
 
 
-def classify_chunk(tool_name: str, role: str) -> str:
-    """Heuristic semantic_role for _enrich_types."""
-    if tool_name:
-        if tool_name in ('Write', 'Edit', 'MultiEdit'):
-            return 'file_operation'
-        elif tool_name == 'Task':
-            return 'delegation'
-        elif tool_name == 'Bash':
-            return 'command'
-        elif tool_name in ('Glob', 'Grep'):
-            return 'search'
-        elif tool_name == 'Read':
-            return 'read'
-        else:
-            return 'message'
-    elif role == 'user':
-        return 'prompt'
-    elif role == 'assistant':
-        return 'response'
-    return 'message'
-
-
 def _ensure_content_tables(conn: sqlite3.Connection):
     """Create content store tables if they don't exist."""
     conn.execute("""
@@ -249,12 +227,9 @@ def insert_chunk_atom(conn: sqlite3.Connection, chunk: dict):
             VALUES (?, ?, NULL, ?)
         """, (chunk_id, chunk['spawned_agent'], chunk['timestamp']))
 
-    # _enrich_types (heuristic, confidence 0.5)
-    semantic_role = classify_chunk(chunk.get('tool_name'), chunk.get('role'))
-    cur.execute("""
-        INSERT OR IGNORE INTO _enrich_types (chunk_id, semantic_role, confidence)
-        VALUES (?, ?, 0.5)
-    """, (chunk_id, semantic_role))
+    # _enrich_types: stopped writing heuristic values (Plan 9).
+    # AI queries role + tool_name directly via curated views.
+    # Table kept as reserved slot for future semantic classification.
 
     # _edges_soft_ops (Bash commands)
     if chunk.get('tool_name') == 'Bash' and chunk.get('content'):

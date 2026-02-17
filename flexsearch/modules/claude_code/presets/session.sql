@@ -3,7 +3,7 @@
 -- @params: session (required), limit (default: 50)
 
 SELECT
-    action,
+    tool_name,
     target_file,
     substr(content, 1, 80) as preview,
     datetime(timestamp, 'unixepoch', 'localtime') as ts

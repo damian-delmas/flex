@@ -4,10 +4,10 @@
 
 SELECT
     substr(source_id, 1, 8) as session,
-    action,
+    tool_name,
     substr(content, 1, 300) as content,
     datetime(timestamp, 'unixepoch', 'localtime') as ts
 FROM messages
-WHERE action IN ('WebFetch', 'WebSearch')
+WHERE tool_name IN ('WebFetch', 'WebSearch')
 ORDER BY timestamp DESC
 LIMIT :limit;
