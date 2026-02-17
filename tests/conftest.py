@@ -214,12 +214,7 @@ def qmem_cell():
     conn.execute("INSERT INTO _meta VALUES ('description', 'Test cell for schema validation. Small doc corpus.')")
     conn.execute("INSERT INTO _meta VALUES ('version', '2.0.0')")
     conn.execute("INSERT INTO _meta VALUES ('schema', 'chunk-atom')")
-    # View levels (required by view generator)
-    conn.execute("INSERT INTO _meta VALUES ('view:sections:level', 'chunk')")
-    conn.execute("INSERT INTO _meta VALUES ('view:documents:level', 'source')")
-    # Domain renames only — graph terms stay exact
-    conn.execute("INSERT INTO _meta VALUES ('view:sections:rename:source_id', 'doc_id')")
-    conn.execute("INSERT INTO _meta VALUES ('view:sections:rename:title', 'doc_title')")
+    # No view config in _meta — views passed as params to regenerate_views()
 
     # 3 sources, 9 chunks (3 per source)
     sources = [
@@ -285,11 +280,7 @@ def claude_code_cell():
         ('description', 'Session provenance for Claude Code. Test fixture.'),
         ('version', '2.0.0'),
         ('schema', 'chunk-atom'),
-        # Domain renames only — graph terms (centrality, community_id, is_hub) stay exact
-        ('view:messages:rename:tool_name', 'action'),
-        ('view:messages:rename:semantic_role', 'kind'),
-        ('view:messages:level', 'chunk'),
-        ('view:sessions:level', 'source'),
+        # No view config in _meta — views passed as params to regenerate_views()
     ]
     conn.executemany("INSERT INTO _meta VALUES (?,?)", meta)
 

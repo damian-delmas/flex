@@ -396,15 +396,6 @@ def main():
     set_meta(db, 'version', '2.0.0')
     set_meta(db, 'schema', 'chunk-atom')
 
-    # View config
-    set_meta(db, 'view:sections:level', 'chunk')
-    set_meta(db, 'view:documents:level', 'source')
-
-    # Domain renames (graph terms stay exact)
-    set_meta(db, 'view:sections:rename:source_id', 'doc_id')
-    set_meta(db, 'view:sections:rename:title', 'doc_title')
-    set_meta(db, 'view:sections:rename:semantic_role', 'kind')
-
     # Retrieval contract — the cell describes its own search model
     set_meta(db, 'retrieval:phase1',
              'PRE-SELECTION masks (numpy on full N): '
@@ -493,7 +484,7 @@ def main():
         print(f"Meditate: {hubs} hubs, {comms} communities, {edge_count} edges")
     else:
         print("No graph built (no embeddings?)")
-        regenerate_views(db)
+        regenerate_views(db, views={'sections': 'chunk', 'documents': 'source'})
 
     # ═════════════════════════════════════════════════
     # 10. ENRICH TYPES (heuristic pre-population)
@@ -520,7 +511,7 @@ def main():
     print(f"Enriched {enrich_count} chunks with doc_type-based heuristics.")
 
     # Regenerate views to pick up _enrich_types
-    regenerate_views(db)
+    regenerate_views(db, views={'sections': 'chunk', 'documents': 'source'})
 
     # ═════════════════════════════════════════════════
     # 11. INSTALL PRESETS

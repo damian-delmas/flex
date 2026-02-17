@@ -74,7 +74,7 @@ def main():
 
     # Regenerate views
     print("\nRegenerating views...")
-    regenerate_views(db)
+    regenerate_views(db, views={'messages': 'chunk', 'sessions': 'source'})
 
     # Verify
     print("\nVerification:")

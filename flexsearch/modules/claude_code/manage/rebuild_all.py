@@ -158,7 +158,7 @@ def main():
     rebuild_delegation_graph(db)
 
     print("Regenerating views...")
-    regenerate_views(db)
+    regenerate_views(db, views={'messages': 'chunk', 'sessions': 'source'})
 
     # Final stats
     cols = db.execute("PRAGMA table_info(sessions)").fetchall()

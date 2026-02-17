@@ -299,35 +299,13 @@ class TestMeta:
         assert schema is not None
         assert schema[0] in ('chunk-atom', 'flat-tables')
 
-    def test_view_meta_convention(self, claude_code_cell):
-        """View meta keys follow patterns:
-           - view:{name}:rename:{raw_col} (4 parts, domain vocabulary)
-           - view:{name}:level (3 parts, chunk|source)
-        """
+    def test_no_view_meta_keys(self, claude_code_cell):
+        """Plan 7: _meta carries no view config. Views passed as code params."""
         view_keys = claude_code_cell.execute(
             "SELECT key, value FROM _meta WHERE key LIKE 'view:%'"
         ).fetchall()
-        assert len(view_keys) > 0, "claude_code cell should have view meta keys"
-
-        has_rename = False
-        has_level = False
-        for key, value in view_keys:
-            parts = key.split(':')
-            assert parts[0] == 'view'
-            assert len(value) > 0, f"Value for '{key}' must not be empty"
-
-            if len(parts) == 4 and parts[2] == 'rename':
-                has_rename = True
-                assert len(parts[3]) > 0, "Raw column name must not be empty"
-            elif len(parts) == 3 and parts[2] == 'level':
-                has_level = True
-                assert value in ('chunk', 'source'), \
-                    f"Level for '{key}' must be 'chunk' or 'source', got '{value}'"
-            else:
-                raise AssertionError(
-                    f"Unknown view meta key pattern: '{key}' "
-                    f"(expected 4-part rename or 3-part level)"
-                )
+        assert len(view_keys) == 0, \
+            "_meta should have zero view:* keys (Plan 7: view config is code, not _meta)"
 
 
 # =============================================================================

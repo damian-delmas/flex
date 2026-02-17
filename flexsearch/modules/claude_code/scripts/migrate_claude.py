@@ -146,11 +146,6 @@ def migrate(db_path: Path):
         INSERT OR REPLACE INTO _meta VALUES ('schema', 'chunk-atom');
         INSERT OR REPLACE INTO _meta VALUES ('migrated_at', datetime('now'));
 
-        INSERT OR REPLACE INTO _meta VALUES ('view:messages:level', 'chunk');
-        INSERT OR REPLACE INTO _meta VALUES ('view:conversations:level', 'source');
-
-        INSERT OR REPLACE INTO _meta VALUES ('view:messages:rename:semantic_role', 'kind');
-
         -- ═══ 5. FTS + INDEXES ═══
 
         DROP TABLE IF EXISTS chunks_fts;
@@ -201,7 +196,7 @@ def migrate(db_path: Path):
 
     # ── 3. GENERATE VIEWS ──
     print("  Generating views via regenerate_views()...")
-    regenerate_views(db)
+    regenerate_views(db, views={'messages': 'chunk', 'conversations': 'source'})
 
     t2 = time.time()
     print(f"  Views generated in {t2 - t1:.1f}s")
