@@ -277,101 +277,137 @@ def execute_query(db: sqlite3.Connection, query: str) -> str:
 def build_instructions() -> str:
     """Build server instructions. The cell describes itself via @orient."""
     parts = [
-        "FlexSearch indexes the USERS conversations and knowledge bases. These are in a SQLite DB called a 'cell'. Each cell contains either their AI Agent conversation history (Claude Code, Codex, Cursor, Kilo etc), their agentic development memories, project history and documentation or other knowledge. When the USER asks to 'flex' or to 'flexsearch' their conversations, memories, changes, documentation or knowledge they are referring to this tool.",
+        "FlexSearch indexes the USERS conversations and knowledge bases. "
+        "Each cell is a self-describing SQLite database with chunks, embeddings, "
+        "and graph intelligence. When the USER asks to 'flex' or 'flexsearch' their "
+        "conversations, memories, changes, documentation or knowledge they are "
+        "referring to this tool.",
         "",
         "Read-only SQL on knowledge cells.",
         "",
         "CELLS:",
     ]
+
+    # --- Generated: cells + descriptions ---
+    cell_views = {}  # {name: set of view names}
     for name in sorted(_known_cells):
         with get_cell(name) as db:
             if db:
                 desc = get_meta(db, 'description') or f"Cell: {name}"
                 parts.append(f"  {name}: {desc}")
+                try:
+                    views = {r[0] for r in db.execute(
+                        "SELECT name FROM sqlite_master WHERE type='view'"
+                    ).fetchall()}
+                    cell_views[name] = views
+                except Exception:
+                    cell_views[name] = set()
 
+    # --- Generated: cell types grouped by view signature ---
+    from collections import defaultdict
+    sig_to_cells = defaultdict(list)
+    for name, views in cell_views.items():
+        sig = tuple(sorted(views))
+        sig_to_cells[sig].append(name)
+
+    parts.extend(["", "CELL TYPES:"])
+    for sig, cells in sorted(sig_to_cells.items(), key=lambda x: x[1][0]):
+        view_list = ', '.join(sig) if sig else '(no views)'
+        cell_list = ', '.join(cells)
+        parts.append(f"  {view_list}:  {cell_list}")
+
+    # --- Hardcoded: query-writer instructions ---
     parts.extend([
         "",
-        "START: query=\"@orient\" for cell schema, view columns, graph intelligence, and presets.",
+        "START: query=\"@orient\" for cell schema, columns, presets, and graph intelligence.",
         "",
-        "QUERY PATTERN:",
-        "  CRITICAL: vec_ops is a SQL table function. Always use inside SELECT ... FROM.",
-        "  vec_ops produces candidates. SQL composes them with everything else.",
+        "QUERY PATTERN — three phases: SQL → vec_ops → SQL",
+        "",
+        "  Phase 1 — SQL pre-filter. Restricts which chunks enter the landscape.",
+        "  Phase 2 — vec_ops. Numpy on the filtered landscape (similarity, diversity, decay).",
+        "  Phase 3 — SQL composition. JOINs, graph boost, GROUP BY on candidates.",
         "",
         "  SELECT v.id, v.score, m.content",
-        "  FROM vec_ops('_raw_chunks', 'authentication', 'diverse recent:7') v",
+        "  FROM vec_ops('_raw_chunks', 'authentication', 'diverse recent:7',",
+        "    'SELECT chunk_id FROM _types_message WHERE role = ''user'''",
+        "  ) v",
         "  JOIN messages m ON v.id = m.id",
         "  ORDER BY v.score * (1 + m.centrality) DESC",
         "  LIMIT 10",
         "",
-        "  _raw_chunks is the embedding table (every cell).",
-        "  JOIN view varies by cell type: messages (claude_code), sections (doc-pac).",
-        "  v.* = vec_ops output.  m.* = metadata + graph intelligence.",
+        "vec_ops('table', 'query_text', 'tokens', 'pre_filter_sql')",
         "",
-        "vec_ops TOKENS (3rd arg, space-separated, all optional):",
-        "  diverse             MMR diversity selection",
-        "  recent[:N]          temporal decay (optional N-day half-life)",
-        "  unlike:TEXT         contrastive — demote similarity to TEXT",
-        "  like:id1,id2,...    centroid of example chunks — \"more like these\"",
-        "  from:TEXT to:TEXT   trajectory search — direction through embedding space",
-        "  local_communities   adds _community column (per-query Louvain on candidates)",
-        "  limit:N             candidate count (default 500)",
+        "  PRE-FILTER SQL:",
+        "    Any SQL returning chunk_ids. Runs before numpy touches anything.",
+        "    Run @orient to discover filterable tables (_types_*, _edges_*, _enrich_*).",
         "",
-        "  No tokens = raw cosine similarity. Tokens compose freely:",
-        "  vec_ops('_raw_chunks', 'auth', 'diverse unlike:jwt recent:7')",
-        "",
-        "PRE-FILTER (4th arg):",
-        "  Any SQL returning chunk IDs. Restricts which chunks compete.",
-        "  vec_ops('_raw_chunks', 'auth', 'diverse recent:7',",
         "    'SELECT chunk_id FROM _types_message WHERE role = ''user'''",
-        "  )",
         "",
-        "  Compound:",
-        "  vec_ops('_raw_chunks', 'auth', 'diverse',",
+        "    Compound:",
         "    'SELECT t.chunk_id FROM _types_message t",
         "     JOIN _edges_source e ON t.chunk_id = e.chunk_id",
         "     JOIN _enrich_source_graph g ON e.source_id = g.source_id",
         "     WHERE t.role = ''user'' AND g.community_id = 3'",
-        "  )",
         "",
-        "  -- Filter to user prompts only (essential for mining human voice):",
-        "  vec_ops('_raw_chunks', 'auth', 'diverse',",
-        "    'SELECT chunk_id FROM _types_message WHERE role = ''user'''",
-        "  )",
+        "  TOKENS (space-separated, all optional):",
+        "    (no tokens)         raw cosine similarity — nearest neighbors, no reshaping",
+        "    diverse             MMR diversity — spreads across subtopics, use for discovery",
+        "    recent[:N]          temporal decay (optional N-day half-life)",
+        "    unlike:TEXT         contrastive — demote similarity to TEXT",
+        "    like:id1,id2,...    centroid of example chunks — \"more like these\"",
+        "    from:TEXT to:TEXT   trajectory — direction through embedding space",
+        "    local_communities   per-query Louvain, adds _community column",
+        "    limit:N             candidate count (default 500)",
         "",
-        "ENRICHMENT COLUMNS:",
-        "  All cells (source graph):",
-        "    centrality, is_hub, community_id (stable, full-corpus)",
+        "    Tokens compose freely:",
+        "    vec_ops('_raw_chunks', 'auth', 'diverse unlike:jwt recent:7')",
         "",
-        "  claude_code only (claude_code enrichments):",
-        "    file_centrality, file_is_hub, file_community_id       file co-edit graph",
-        "    agents_spawned, is_orchestrator, delegation_depth      delegation graph",
-        "    action, target_file, timestamp, project                  chunk-level",
+        "RECIPES:",
         "",
-        "  Run @orient on any cell to see its full schema and available columns.",
+        "  Nearest neighbors (raw cosine, no reshaping):",
+        "    SELECT v.id, v.score, m.content",
+        "    FROM vec_ops('_raw_chunks', 'YOUR TOPIC') v",
+        "    JOIN messages m ON v.id = m.id",
+        "    ORDER BY v.score DESC",
+        "    LIMIT 10",
         "",
-        "SQL PATTERNS:",
-        "  ORDER BY v.score * (1 + m.centrality) DESC         -- hub-boosted ranking",
-        "  WHERE m.community_id = 3                            -- global community (stable)",
-        "  WHERE v._community = 2                              -- query-local (per-query, ephemeral)",
-        "  GROUP BY v._community                               -- theme survey (needs local_communities)",
-        "  WHERE m.is_orchestrator = 1 AND m.file_is_hub = 1   -- cross-dimension (claude_code only)",
+        "  Semantic discovery (diverse — spreads across subtopics):",
+        "    SELECT v.id, v.score, m.content, m.project",
+        "    FROM vec_ops('_raw_chunks', 'YOUR TOPIC', 'diverse recent:7') v",
+        "    JOIN messages m ON v.id = m.id",
+        "    ORDER BY v.score * (1 + m.centrality) DESC",
+        "    LIMIT 10",
         "",
-        "HYBRID (FTS + semantic + graph):",
-        "  vec_ops for semantic candidates, chunks_fts MATCH for keywords,",
-        "  WHERE is_hub = 1 ORDER BY centrality DESC for graph intelligence.",
-        "  Plain SQL works without vec_ops for exact filters (WHERE project = 'X').",
+        "  Human voice only (filter to what the user actually said):",
+        "    SELECT v.id, v.score, m.content",
+        "    FROM vec_ops('_raw_chunks', 'YOUR TOPIC', 'diverse',",
+        "      'SELECT chunk_id FROM _types_message WHERE role = ''user''') v",
+        "    JOIN messages m ON v.id = m.id",
+        "    LIMIT 10",
         "",
-        "ORIENTATION (manual discovery):",
-        "  SELECT value FROM _meta WHERE key='description'",
-        "  SELECT name FROM sqlite_master WHERE type='view'",
-        "  PRAGMA table_info('messages')                       -- or 'sections' for doc-pac",
-        "  SELECT name FROM sqlite_master WHERE name LIKE '_edges_%'",
+        "  Hub navigation (find the important sessions about X):",
+        "    SELECT v.id, v.score, m.title, m.centrality",
+        "    FROM vec_ops('_raw_chunks', 'YOUR TOPIC', 'diverse') v",
+        "    JOIN messages m ON v.id = m.id",
+        "    WHERE m.is_hub = 1",
+        "    ORDER BY m.centrality DESC",
+        "    LIMIT 5",
         "",
-        "PRESETS (pass @name as query parameter):",
-        "  @orient                           full cell orientation (start here)",
-        "  @genealogy concept=X              trace concept lineage",
-        "  @sessions limit=N                 recent sessions (claude_code)",
-        "  SELECT name, description FROM _presets    discover all",
+        "  Structural (when/how much — no embeddings needed):",
+        "    SELECT project, COUNT(*) as sessions",
+        "    FROM sessions GROUP BY project ORDER BY sessions DESC",
+        "",
+        "METHODOLOGY:",
+        "  1. Schema first. Run @orient before writing any query.",
+        "  2. SQL for 'when/how much', vec_ops for 'what about'. Don't embed-search what SQL can answer.",
+        "  3. diverse for discovery, vanilla for precision. diverse spreads across subtopics. Omit it when you want actual nearest neighbors.",
+        "  4. Pre-filter for human voice: SELECT chunk_id FROM _types_message WHERE role = 'user'",
+        "  5. Pivot semantic → structural. vec_ops finds the neighborhood, graph columns navigate it.",
+        "  6. Escalate specificity. COUNT(*) → GROUP BY → vec_ops on the interesting cluster.",
+        "  7. Cross-cell triangulation. Design intent in context cells, implementation in claude_code.",
+        "  8. ID prefix as date. WHERE v.id LIKE '260207%' — chunk IDs encode YYMMDD creation date.",
+        "",
+        "PRESETS: pass @name as query parameter. Run @orient to discover all presets per cell.",
         "",
     ])
     return "\n".join(parts)
