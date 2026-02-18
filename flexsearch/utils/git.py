@@ -9,7 +9,7 @@ These are defaults; user-specific naming lives in _enrich_repo_identity
 import subprocess
 from pathlib import Path
 
-GENERIC_DIR_NAMES = {'main', 'master', 'dev', 'staging', 'prod'}
+GENERIC_DIR_NAMES = {'main', 'master', 'dev', 'staging', 'prod', 'context', 'sandbox'}
 
 
 def project_from_git_root(git_root: str) -> str:
