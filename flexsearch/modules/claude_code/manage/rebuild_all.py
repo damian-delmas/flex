@@ -25,6 +25,44 @@ CLAUDE_CODE_DB = resolve_cell('claude_code')
 GRAPH_THRESHOLD = 0.65
 
 
+def rebuild_warmup_types(db):
+    """Build _types_source_warmup — structural warmup detection.
+
+    Warmup: < 50 tool-op chunks AND no Write/Edit/Task/MultiEdit.
+    Replaces brittle title = 'Warmup' filter.
+    """
+    print("=" * 60)
+    print("Step 0: Warmup Detection")
+    print("=" * 60)
+    sys.stdout.flush()
+
+    t0 = time.time()
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS _types_source_warmup (
+            source_id TEXT PRIMARY KEY,
+            is_warmup_only INTEGER DEFAULT 0
+        )
+    """)
+    db.execute("DELETE FROM _types_source_warmup")
+    db.execute("""
+        INSERT INTO _types_source_warmup (source_id, is_warmup_only)
+        SELECT es.source_id, 1
+        FROM _edges_source es
+        JOIN _edges_tool_ops t ON es.chunk_id = t.chunk_id
+        GROUP BY es.source_id
+        HAVING COUNT(*) < 50
+           AND SUM(CASE WHEN t.tool_name IN ('Write', 'Edit', 'Task', 'MultiEdit')
+                        THEN 1 ELSE 0 END) = 0
+    """)
+    db.commit()
+
+    warmup_count = db.execute(
+        "SELECT COUNT(*) FROM _types_source_warmup WHERE is_warmup_only = 1"
+    ).fetchone()[0]
+    print(f'  {warmup_count} warmup sessions detected in {time.time()-t0:.1f}s\n')
+    sys.stdout.flush()
+
+
 def rebuild_source_graph(db):
     """Rebuild source graph with noise filter + tuned threshold."""
     print("=" * 60)
@@ -153,6 +191,7 @@ def main():
     print(f'Opened: {CLAUDE_CODE_DB}\n')
     sys.stdout.flush()
 
+    rebuild_warmup_types(db)
     rebuild_source_graph(db)
     rebuild_file_graph(db)
     rebuild_delegation_graph(db)

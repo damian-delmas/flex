@@ -32,7 +32,9 @@ def session_filter_sql():
         SELECT source_id FROM _raw_sources
         WHERE message_count >= {min_messages}
           AND source_id NOT LIKE 'agent-%'
-          AND (title IS NULL OR title != 'Warmup')
+          AND source_id NOT IN (
+              SELECT source_id FROM _types_source_warmup WHERE is_warmup_only = 1
+          )
     """.format(min_messages=MIN_MESSAGES)
 
 
@@ -40,7 +42,7 @@ def graph_filter_sql():
     """WHERE fragment for build_similarity_graph().
 
     Pass as: build_similarity_graph(db, where=graph_filter_sql())
-    Filters: min chunks, no warmups, no agent children (Plan 9).
+    Filters: min chunks, no warmups (_types_source_warmup), no agent children.
     Unified with session_filter_sql() — same exclusion policy.
     """
     return """source_id IN (
@@ -48,5 +50,5 @@ def graph_filter_sql():
         GROUP BY source_id HAVING COUNT(*) >= {min_chunks}
     ) AND source_id NOT LIKE 'agent-%'
     AND source_id NOT IN (
-        SELECT source_id FROM _raw_sources WHERE title = 'Warmup'
+        SELECT source_id FROM _types_source_warmup WHERE is_warmup_only = 1
     )""".format(min_chunks=MIN_CHUNKS)

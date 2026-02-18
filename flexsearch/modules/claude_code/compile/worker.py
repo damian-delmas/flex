@@ -75,16 +75,15 @@ def enrich_chunk(event: dict) -> dict:
         return {}
 
 
-def _infer_project(cwd: str) -> str | None:
-    """Extract project name from cwd path."""
+from flexsearch.utils.git import git_root_from_path as _git_root_from_path
+from flexsearch.utils.git import project_from_git_root as _project_from_git_root
+
+
+def _git_root(cwd: str) -> str | None:
+    """Return git show-toplevel for cwd, or None if not a git repo."""
     if not cwd:
         return None
-    parts = Path(cwd).parts
-    if 'projects' in parts:
-        idx = parts.index('projects')
-        if idx + 1 < len(parts):
-            return parts[idx + 1]
-    return None
+    return _git_root_from_path(cwd)
 
 
 def ensure_source_exists(conn: sqlite3.Connection, session_id: str, cwd: str = None):
@@ -94,13 +93,14 @@ def ensure_source_exists(conn: sqlite3.Connection, session_id: str, cwd: str = N
     if cur.fetchone():
         return
 
-    project = _infer_project(cwd)
+    git_root = _git_root(cwd)
+    project = _project_from_git_root(git_root or cwd) if (git_root or cwd) else None
 
     cur.execute("""
         INSERT INTO _raw_sources
-        (source_id, source, project, start_time, primary_cwd, message_count, episode_count)
-        VALUES (?, ?, ?, ?, ?, 0, 0)
-    """, (session_id, f"claude_code:{session_id}", project, int(time.time()), cwd))
+        (source_id, source, project, git_root, start_time, primary_cwd, message_count, episode_count)
+        VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+    """, (session_id, f"claude_code:{session_id}", project, git_root, int(time.time()), cwd))
 
 
 def update_source_stats(conn: sqlite3.Connection, session_id: str, chunk: dict):
@@ -325,6 +325,9 @@ def sync_session_messages(session_id: str, conn: sqlite3.Connection) -> int:
     jsonl_path = find_jsonl(session_id)
     if not jsonl_path or not jsonl_path.exists():
         return 0
+
+    # Ensure source row exists (backfill path may skip process_event)
+    ensure_source_exists(conn, session_id)
 
     cur = conn.cursor()
 
