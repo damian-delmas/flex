@@ -380,7 +380,7 @@ class VectorCache:
             cand_indices = np.array(top_indices[:comm_pool])
             cand_vecs = active_matrix[cand_indices]
             sims = cand_vecs @ cand_vecs.T
-            comm_threshold = 0.65
+            comm_threshold = 0.5
             rows, cols = np.where(np.triu(sims > comm_threshold, k=1))
             G = nx.Graph()
             G.add_nodes_from(range(len(cand_indices)))
@@ -497,6 +497,13 @@ class VectorCache:
         ids = [r[0] for r in rows]
         return self.get_mask_for_ids(ids)
 
+    def get_vectors(self, ids: list) -> np.ndarray:
+        """Return embedding matrix for a batch of IDs. Unknown IDs skipped."""
+        indices = [self._id_to_idx[id_] for id_ in ids if id_ in self._id_to_idx]
+        if not indices:
+            return np.empty((0, self.dims), dtype=np.float32)
+        return self.matrix[np.array(indices, dtype=np.int64)]
+
     def get_vector(self, doc_id: str) -> Optional[np.ndarray]:
         """Return the embedding vector for an ID."""
         if doc_id in self._id_to_idx:
@@ -542,16 +549,21 @@ def materialize_vec_ops(db, sql: str) -> str:
     if not (before.endswith('FROM') or before.endswith('JOIN') or before.endswith(',')):
         return sql
 
-    # Find the matching close paren (handles quoted strings with parens)
+    # Find the matching close paren (handles quoted strings with escaped '' quotes)
     paren_start = start.end() - 1
     depth = 0
     in_quote = False
     end_pos = None
-    for i in range(paren_start, len(sql)):
+    i = paren_start
+    while i < len(sql):
         c = sql[i]
         if in_quote:
-            if c == "'" and (i + 1 >= len(sql) or sql[i + 1] != "'"):
-                in_quote = False
+            if c == "'":
+                if i + 1 < len(sql) and sql[i + 1] == "'":
+                    i += 2  # skip escaped quote '', stay in string
+                    continue
+                else:
+                    in_quote = False
         else:
             if c == "'":
                 in_quote = True
@@ -562,6 +574,7 @@ def materialize_vec_ops(db, sql: str) -> str:
                 if depth == 0:
                     end_pos = i + 1
                     break
+        i += 1
     if end_pos is None:
         return sql
 
