@@ -9,6 +9,8 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
+
 FLEX_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
 sys.path.insert(0, str(FLEX_ROOT))
 
@@ -20,8 +22,10 @@ from flexsearch.modules.claude_code.manage.noise import graph_filter_sql
 from flexsearch.registry import resolve_cell
 CLAUDE_CODE_DB = resolve_cell('claude_code')
 
-# claude_code corpus: post-Plan-10 selective pooling + mean centering.
-# Median pairwise sim -0.006 (was 0.61). Threshold 0.55 → 15% density, 48 communities.
+# Plan 10: selective pooling + mean centering shifted median pairwise similarity
+# from 0.61 to -0.006. Old threshold 0.65 produced 168 communities but 135
+# singletons — fractured PageRank. 0.55 gives 15.2% density, 48 communities,
+# 40 singletons. Connected enough for PageRank to differentiate.
 GRAPH_THRESHOLD = 0.55
 
 
@@ -66,10 +70,75 @@ def rebuild_warmup_types(db):
     sys.stdout.flush()
 
 
+def reembed_sources(db):
+    """Re-embed _raw_sources from prompt + response chunks only.
+
+    Plan 10 selective pooling: mean-pool of ALL chunks converges every session
+    toward 'generic Claude Code session' (median pairwise sim 0.61). Filtering
+    to user_prompt + assistant captures human intent and agent reasoning —  the
+    actual topical content. Tool calls, Read results, Edit diffs are structural
+    and already captured in edge tables.
+    """
+    print("=" * 60)
+    print("Step 0.5: Selective Source Pooling (prompt + response only)")
+    print("=" * 60)
+    sys.stdout.flush()
+
+    t0 = time.time()
+
+    # Backup current embeddings
+    db.execute("DROP TABLE IF EXISTS _backup_source_embeddings_meanpool")
+    db.execute("""
+        CREATE TABLE _backup_source_embeddings_meanpool AS
+        SELECT source_id, embedding FROM _raw_sources
+        WHERE embedding IS NOT NULL
+    """)
+    backup_cnt = db.execute(
+        "SELECT COUNT(*) FROM _backup_source_embeddings_meanpool"
+    ).fetchone()[0]
+    print(f"  Backed up {backup_cnt} source embeddings")
+    sys.stdout.flush()
+
+    sources = db.execute("SELECT source_id FROM _raw_sources").fetchall()
+    updated = 0
+    skipped = 0
+
+    for (source_id,) in sources:
+        rows = db.execute("""
+            SELECT c.embedding
+            FROM _raw_chunks c
+            JOIN _edges_source es ON c.id = es.chunk_id
+            JOIN _types_message tm ON c.id = tm.chunk_id
+            WHERE es.source_id = ?
+              AND tm.type IN ('user_prompt', 'assistant')
+              AND c.embedding IS NOT NULL
+        """, (source_id,)).fetchall()
+
+        if not rows:
+            skipped += 1
+            continue
+
+        vecs = np.array([np.frombuffer(r[0], dtype=np.float32) for r in rows])
+        new_emb = vecs.mean(axis=0)
+        norm = np.linalg.norm(new_emb)
+        if norm > 0:
+            new_emb = new_emb / norm
+
+        db.execute("UPDATE _raw_sources SET embedding = ? WHERE source_id = ?",
+                   (new_emb.tobytes(), source_id))
+        updated += 1
+
+    db.commit()
+    elapsed = time.time() - t0
+    print(f"  Re-embedded {updated} sources ({skipped} skipped, no prompt/response chunks)")
+    print(f"  Done in {elapsed:.1f}s\n")
+    sys.stdout.flush()
+
+
 def rebuild_source_graph(db):
     """Rebuild source graph with noise filter + tuned threshold."""
     print("=" * 60)
-    print("Step 1: Source Graph (with noise filter)")
+    print("Step 1: Source Graph (with noise filter + mean centering)")
     print("=" * 60)
 
     old_cnt = db.execute('SELECT COUNT(*) FROM _enrich_source_graph').fetchone()[0]
@@ -92,7 +161,8 @@ def rebuild_source_graph(db):
     sys.stdout.flush()
 
     G, edges = build_similarity_graph(db, table='_raw_sources', id_col='source_id',
-                                       threshold=GRAPH_THRESHOLD, where=where)
+                                       threshold=GRAPH_THRESHOLD, where=where,
+                                       center=True)
     t1 = time.time()
     print(f'Graph built in {t1-t0:.1f}s — {edges} edges')
     sys.stdout.flush()
@@ -212,6 +282,7 @@ def main():
     sys.stdout.flush()
 
     rebuild_warmup_types(db)
+    reembed_sources(db)
     rebuild_source_graph(db)
     rebuild_file_graph(db)
     rebuild_delegation_graph(db)

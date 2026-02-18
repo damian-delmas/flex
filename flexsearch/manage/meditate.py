@@ -22,7 +22,7 @@ from typing import Optional
 def build_similarity_graph(db: sqlite3.Connection, table: str = '_raw_sources',
                            id_col: str = 'id', embedding_col: str = 'embedding',
                            threshold: float = 0.5, top_k: int = None,
-                           where: str = None):
+                           where: str = None, center: bool = False):
     """
     Build similarity graph from embeddings via matrix multiply.
 
@@ -36,6 +36,10 @@ def build_similarity_graph(db: sqlite3.Connection, table: str = '_raw_sources',
         where: Optional SQL WHERE fragment to filter rows (e.g.
                "source_id IN (SELECT source_id FROM _edges_source
                GROUP BY source_id HAVING COUNT(*) >= 20)")
+        center: If True, subtract corpus mean before similarity computation.
+                Removes shared embedding direction (e.g. "I'm a Claude Code
+                session"), making pairwise similarity reflect topical
+                differences rather than shared vocabulary.
 
     Returns:
         (NetworkX graph, edge_count) or (None, 0)
@@ -64,9 +68,19 @@ def build_similarity_graph(db: sqlite3.Connection, table: str = '_raw_sources',
     emb_matrix = np.vstack(embeddings)
     norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
     emb_matrix = emb_matrix / (norms + 1e-10)
+
+    # Mean centering: subtract corpus mean, re-normalize.
+    # What remains is what makes each item *different* from the average.
+    if center:
+        corpus_mean = emb_matrix.mean(axis=0)
+        emb_matrix = emb_matrix - corpus_mean
+        norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
+        norms[norms == 0] = 1  # avoid div by zero
+        emb_matrix = emb_matrix / norms
+
     sim_matrix = emb_matrix @ emb_matrix.T
 
-    # Build graph
+    # Build graph — vectorized edge creation
     G = nx.Graph()
     for item_id in item_ids:
         G.add_node(item_id)
@@ -84,12 +98,14 @@ def build_similarity_graph(db: sqlite3.Connection, table: str = '_raw_sources',
                                weight=float(sims[j]))
                     edge_count += 1
     else:
-        for i in range(n):
-            for j in range(i + 1, n):
-                if sim_matrix[i, j] >= threshold:
-                    G.add_edge(item_ids[i], item_ids[j],
-                               weight=float(sim_matrix[i, j]))
-                    edge_count += 1
+        # Vectorized: compute boolean mask, extract qualifying pairs
+        mask = sim_matrix >= threshold
+        np.fill_diagonal(mask, False)
+        ii, jj = np.where(np.triu(mask))
+        for idx in range(len(ii)):
+            G.add_edge(item_ids[ii[idx]], item_ids[jj[idx]],
+                        weight=float(sim_matrix[ii[idx], jj[idx]]))
+        edge_count = len(ii)
 
     print(f"Graph: {G.number_of_nodes()} nodes, {edge_count} edges")
     return G, edge_count
