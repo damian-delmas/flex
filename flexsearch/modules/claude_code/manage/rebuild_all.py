@@ -20,9 +20,9 @@ from flexsearch.modules.claude_code.manage.noise import graph_filter_sql
 from flexsearch.registry import resolve_cell
 CLAUDE_CODE_DB = resolve_cell('claude_code')
 
-# claude_code corpus: median pairwise similarity is 0.61 at threshold 0.5 -> 78% density.
-# 0.65 gives 39% density — meaningful topology without near-complete graph.
-GRAPH_THRESHOLD = 0.65
+# claude_code corpus: post-Plan-10 selective pooling + mean centering.
+# Median pairwise sim -0.006 (was 0.61). Threshold 0.55 → 15% density, 48 communities.
+GRAPH_THRESHOLD = 0.55
 
 
 def rebuild_warmup_types(db):

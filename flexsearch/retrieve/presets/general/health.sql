@@ -1,5 +1,6 @@
 -- @name: health
 -- @description: Pipeline health check. Chunk/source counts, embedding coverage, graph freshness, recent ops.
+-- @multi: true
 
 -- @query: counts
 SELECT
