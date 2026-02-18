@@ -565,6 +565,23 @@ def daemon_loop(interval=2):
         except Exception as e:
             print(f"[docpac] Error: {e}", file=sys.stderr)
 
+        # Queue depth check
+        try:
+            qconn = sqlite3.connect(str(QUEUE_DB), timeout=5.0)
+            cc_depth = qconn.execute(
+                "SELECT COUNT(*) FROM claude_code_pending"
+            ).fetchone()[0]
+            dp_depth = qconn.execute(
+                "SELECT COUNT(*) FROM pending"
+            ).fetchone()[0]
+            qconn.close()
+            if cc_depth > 500:
+                print(f"[worker] WARNING: claude_code queue depth {cc_depth}", file=sys.stderr)
+            if dp_depth > 100:
+                print(f"[docpac] WARNING: docpac queue depth {dp_depth}", file=sys.stderr)
+        except Exception:
+            pass  # queue may not exist yet on first boot
+
         time.sleep(interval)
 
 

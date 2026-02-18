@@ -609,6 +609,94 @@ class TestSQLPreFilter:
 
 
 # =============================================================================
+# Authorizer Guard (SQL pre-filter injection protection)
+# =============================================================================
+
+class TestAuthorizerGuard:
+    """Pre-filter SQL authorizer: SELECT-only, deny writes/DDL."""
+
+    @pytest.fixture
+    def udf_conn(self, mod_db):
+        """mod_db connection with vec_ops UDF registered."""
+        from flexsearch.retrieve.vec_ops import VectorCache, register_vec_ops
+        cache = VectorCache()
+        cache.load_from_db(mod_db, '_raw_chunks', 'embedding', 'id')
+        cache.load_columns(mod_db, '_raw_chunks', 'id')
+
+        def _embed(text):
+            v = np.zeros(384, dtype=np.float32)
+            v[0] = 1.0
+            return v.reshape(1, -1)
+
+        register_vec_ops(mod_db, {'_raw_chunks': cache}, _embed)
+        return mod_db
+
+    def test_select_pre_filter_allowed(self, udf_conn):
+        """Legitimate SELECT pre-filter passes."""
+        import json
+        result = udf_conn.execute(
+            "SELECT vec_ops('_raw_chunks', 'test', '', "
+            "\"SELECT chunk_id FROM _types_message WHERE role = 'user'\")"
+        ).fetchone()[0]
+        data = json.loads(result)
+        assert isinstance(data, list)
+        ids = {r['id'] for r in data}
+        assert ids.issubset({'a', 'c', 'e'})
+
+    def test_insert_via_pre_filter_denied(self, udf_conn):
+        """INSERT in pre-filter SQL is denied by authorizer."""
+        import json
+        result = udf_conn.execute(
+            "SELECT vec_ops('_raw_chunks', 'test', '', "
+            "\"INSERT INTO _meta VALUES ('injected', '1'); SELECT 'x'\")"
+        ).fetchone()[0]
+        data = json.loads(result)
+        assert 'error' in data
+        count = udf_conn.execute(
+            "SELECT COUNT(*) FROM _meta WHERE key = 'injected'"
+        ).fetchone()[0]
+        assert count == 0
+
+    def test_drop_via_pre_filter_denied(self, udf_conn):
+        """DROP TABLE in pre-filter SQL is denied by authorizer."""
+        import json
+        result = udf_conn.execute(
+            "SELECT vec_ops('_raw_chunks', 'test', '', "
+            "'DROP TABLE _types_message')"
+        ).fetchone()[0]
+        data = json.loads(result)
+        assert 'error' in data
+        count = udf_conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='_types_message'"
+        ).fetchone()[0]
+        assert count == 1
+
+    def test_compound_join_pre_filter_allowed(self, udf_conn):
+        """Compound JOIN SELECT in pre-filter passes."""
+        import json
+        result = udf_conn.execute(
+            "SELECT vec_ops('_raw_chunks', 'test', '', "
+            "'SELECT t.chunk_id FROM _types_message t "
+            "JOIN _edges_source e ON t.chunk_id = e.chunk_id "
+            "WHERE t.role = ''user''')"
+        ).fetchone()[0]
+        data = json.loads(result)
+        assert isinstance(data, list)
+
+    def test_authorizer_cleared_after_pre_filter(self, udf_conn):
+        """Connection authorizer is None after vec_ops call (finally block)."""
+        udf_conn.execute(
+            "SELECT vec_ops('_raw_chunks', 'test', '', "
+            "\"SELECT chunk_id FROM _types_message WHERE role = 'user'\")"
+        ).fetchone()
+        # Should be able to INSERT normally after the UDF call
+        udf_conn.execute("INSERT INTO _meta VALUES ('post_udf', 'ok')")
+        count = udf_conn.execute(
+            "SELECT COUNT(*) FROM _meta WHERE key = 'post_udf'"
+        ).fetchone()[0]
+        assert count == 1
+
+# =============================================================================
 # Centroid (like:)
 # =============================================================================
 

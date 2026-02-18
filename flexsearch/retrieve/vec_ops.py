@@ -653,13 +653,23 @@ def register_vec_ops(conn, caches: dict, embed_fn, cell_config: dict = None):
         modifiers = parse_modifiers(modifier_str) if modifier_str else None
 
         # SQL pre-filter: execute 4th arg to get chunk IDs
+        # Authorizer whitelist: pure SELECT only (READ=20, SELECT=21, FUNCTION=31, RECURSIVE=33)
+        _SQLITE_OK, _SQLITE_DENY = 0, 1
+        _SELECT_ONLY = {20, 21, 31, 33}
+
+        def _read_only_authorizer(action, arg1, arg2, db_name, trigger_name):
+            return _SQLITE_OK if action in _SELECT_ONLY else _SQLITE_DENY
+
         pre_filter_ids = None
         if pre_filter_sql:
             try:
+                conn.set_authorizer(_read_only_authorizer)
                 rows = conn.execute(pre_filter_sql).fetchall()
                 pre_filter_ids = {str(r[0]) for r in rows}
             except Exception as e:
                 return json.dumps({"error": f"vec_ops pre-filter SQL failed: {e}"})
+            finally:
+                conn.set_authorizer(None)
 
         # Handle NULL query text (for like: or from:to: tokens)
         if query_text is None:
