@@ -1,5 +1,5 @@
 """
-TDD Tests for flexsearch core — Plan 1 + Plan 7
+TDD Tests for flex core — Plan 1 + Plan 7
 
 Tests:
   - open_cell(path) -> sqlite3.Connection
@@ -13,9 +13,9 @@ import sqlite3
 import pytest
 from pathlib import Path
 
-def _can_import_flexsearch():
+def _can_import_flex():
     try:
-        from flexsearch.core import open_cell, run_sql, regenerate_views
+        from flex.core import open_cell, run_sql, regenerate_views
         return True
     except ImportError:
         return False
@@ -23,8 +23,8 @@ def _can_import_flexsearch():
 
 # These imports will fail until Plan 1 creates the module
 pytestmark = pytest.mark.skipif(
-    not _can_import_flexsearch(),
-    reason="flexsearch.core not yet implemented (Plan 1)"
+    not _can_import_flex(),
+    reason="flex.core not yet implemented (Plan 1)"
 )
 
 
@@ -36,7 +36,7 @@ class TestOpenCell:
     """open_cell(path) loads a .db, registers UDFs, returns connection."""
 
     def test_returns_connection(self, tmp_path):
-        from flexsearch.core import open_cell
+        from flex.core import open_cell
         db_path = tmp_path / "test.db"
         db_path.touch()
         conn = open_cell(str(db_path))
@@ -44,7 +44,7 @@ class TestOpenCell:
         conn.close()
 
     def test_row_factory_is_row(self, tmp_path):
-        from flexsearch.core import open_cell
+        from flex.core import open_cell
         db_path = tmp_path / "test.db"
         db_path.touch()
         conn = open_cell(str(db_path))
@@ -53,7 +53,7 @@ class TestOpenCell:
 
     def test_set_meta_creates_table(self, tmp_path):
         """set_meta() creates _meta on demand if missing."""
-        from flexsearch.core import open_cell, set_meta, get_meta
+        from flex.core import open_cell, set_meta, get_meta
         db_path = tmp_path / "test.db"
         bare = sqlite3.connect(str(db_path))
         bare.close()
@@ -75,20 +75,20 @@ class TestRunSQL:
     """run_sql(db, sql, params) executes SQL and returns list[dict]."""
 
     def test_returns_list_of_dicts(self, qmem_cell):
-        from flexsearch.core import run_sql
+        from flex.core import run_sql
         results = run_sql(qmem_cell, "SELECT * FROM _raw_chunks LIMIT 2")
         assert isinstance(results, list)
         assert len(results) == 2
         assert isinstance(results[0], dict)
 
     def test_dict_has_column_names(self, qmem_cell):
-        from flexsearch.core import run_sql
+        from flex.core import run_sql
         results = run_sql(qmem_cell, "SELECT id, content FROM _raw_chunks LIMIT 1")
         assert 'id' in results[0]
         assert 'content' in results[0]
 
     def test_params_interpolation(self, qmem_cell):
-        from flexsearch.core import run_sql
+        from flex.core import run_sql
         results = run_sql(
             qmem_cell,
             "SELECT * FROM _raw_sources WHERE doc_type = :dtype",
@@ -98,7 +98,7 @@ class TestRunSQL:
         assert results[0]['source_id'] == 'src-arch'
 
     def test_empty_result(self, qmem_cell):
-        from flexsearch.core import run_sql
+        from flex.core import run_sql
         results = run_sql(
             qmem_cell,
             "SELECT * FROM _raw_chunks WHERE id = 'nonexistent'"
@@ -106,7 +106,7 @@ class TestRunSQL:
         assert results == []
 
     def test_count_query(self, qmem_cell):
-        from flexsearch.core import run_sql
+        from flex.core import run_sql
         results = run_sql(qmem_cell, "SELECT COUNT(*) as n FROM _raw_chunks")
         assert results[0]['n'] == 9
 
@@ -119,7 +119,7 @@ class TestRegenerateViews:
     """regenerate_views(db, views) discovers tables, emits raw CREATE VIEW."""
 
     def test_creates_views_with_explicit_param(self, qmem_cell):
-        from flexsearch.views import regenerate_views
+        from flex.views import regenerate_views
         regenerate_views(qmem_cell, views={'sections': 'chunk', 'documents': 'source'})
         views = qmem_cell.execute(
             "SELECT name FROM sqlite_master WHERE type='view' ORDER BY name"
@@ -130,7 +130,7 @@ class TestRegenerateViews:
 
     def test_raw_column_names_no_renames(self, claude_code_cell):
         """Auto-generated views have raw column names — no renames."""
-        from flexsearch.views import regenerate_views
+        from flex.views import regenerate_views
         regenerate_views(claude_code_cell, views={'messages': 'chunk', 'sessions': 'source'})
         cols = claude_code_cell.execute("PRAGMA table_info(messages)").fetchall()
         col_names = {c[1] for c in cols}
@@ -141,7 +141,7 @@ class TestRegenerateViews:
 
     def test_view_has_one_row_per_chunk(self, qmem_cell):
         """Views must not multiply rows (1:1 PK rule)."""
-        from flexsearch.views import regenerate_views
+        from flex.views import regenerate_views
         regenerate_views(qmem_cell, views={'sections': 'chunk', 'documents': 'source'})
         chunk_count = qmem_cell.execute("SELECT COUNT(*) FROM _raw_chunks").fetchone()[0]
         views = qmem_cell.execute(
@@ -154,7 +154,7 @@ class TestRegenerateViews:
 
     def test_idempotent(self, qmem_cell):
         """Calling regenerate_views twice should produce same result."""
-        from flexsearch.views import regenerate_views
+        from flex.views import regenerate_views
         regenerate_views(qmem_cell, views={'sections': 'chunk', 'documents': 'source'})
         views_first = qmem_cell.execute(
             "SELECT name FROM sqlite_master WHERE type='view' ORDER BY name"
@@ -167,7 +167,7 @@ class TestRegenerateViews:
 
     def test_detect_existing_views(self, qmem_cell):
         """When views=None, re-creates existing views from sqlite_master."""
-        from flexsearch.views import regenerate_views
+        from flex.views import regenerate_views
         # First call creates views
         regenerate_views(qmem_cell, views={'sections': 'chunk', 'documents': 'source'})
         # Second call with no param should detect and re-create
@@ -181,7 +181,7 @@ class TestRegenerateViews:
 
     def test_enrichment_wipe_safe(self, qmem_cell):
         """Views still work after enrichment tables are wiped."""
-        from flexsearch.views import regenerate_views
+        from flex.views import regenerate_views
         regenerate_views(qmem_cell, views={'sections': 'chunk', 'documents': 'source'})
         qmem_cell.execute("DELETE FROM _enrich_source_graph")
         qmem_cell.execute("DELETE FROM _enrich_types")
@@ -194,7 +194,7 @@ class TestRegenerateViews:
 
     def test_no_meta_view_keys_needed(self, qmem_cell):
         """Views work without any view:* keys in _meta."""
-        from flexsearch.views import regenerate_views
+        from flex.views import regenerate_views
         # Verify no view keys exist
         count = qmem_cell.execute(
             "SELECT COUNT(*) FROM _meta WHERE key LIKE 'view:%'"
@@ -216,7 +216,7 @@ class TestInstallViews:
     """install_views(db, view_dir) installs curated .sql views into _views table."""
 
     def test_installs_curated_view(self, qmem_cell, tmp_path):
-        from flexsearch.views import install_views
+        from flex.views import install_views
         # Write a simple curated view
         view_file = tmp_path / "test_view.sql"
         view_file.write_text(
@@ -238,13 +238,13 @@ class TestInstallViews:
         assert meta[1] == 'Simple test view'
 
     def test_views_table_created(self, qmem_cell, tmp_path):
-        from flexsearch.views import install_views, _has_table
+        from flex.views import install_views, _has_table
         assert not _has_table(qmem_cell, '_views')
         install_views(qmem_cell, tmp_path)  # empty dir, but creates table
         assert _has_table(qmem_cell, '_views')
 
     def test_curated_view_discoverable(self, qmem_cell, tmp_path):
-        from flexsearch.views import install_views
+        from flex.views import install_views
         view_file = tmp_path / "hub_docs.sql"
         view_file.write_text(
             "-- @name: hub_docs\n"
@@ -266,7 +266,7 @@ class TestCuratedPrecedence:
     """Curated views in _views table take precedence over auto-generated."""
 
     def test_curated_survives_regenerate(self, qmem_cell, tmp_path):
-        from flexsearch.views import install_views, regenerate_views
+        from flex.views import install_views, regenerate_views
         # Install a curated 'sections' view
         view_file = tmp_path / "sections.sql"
         view_file.write_text(
@@ -287,7 +287,7 @@ class TestCuratedPrecedence:
         assert len(cols_after) == 3, "Curated view should survive regenerate_views()"
 
     def test_auto_generated_still_created_for_non_curated(self, qmem_cell, tmp_path):
-        from flexsearch.views import install_views, regenerate_views
+        from flex.views import install_views, regenerate_views
         # Install curated 'sections' only
         view_file = tmp_path / "sections.sql"
         view_file.write_text(
@@ -315,7 +315,7 @@ class TestOpsTable:
     """_ops table: cell mutation provenance."""
 
     def test_ensure_ops_table_creates_table(self, empty_cell):
-        from flexsearch.core import ensure_ops_table
+        from flex.core import ensure_ops_table
         ensure_ops_table(empty_cell)
         tables = empty_cell.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='_ops'"
@@ -323,7 +323,7 @@ class TestOpsTable:
         assert len(tables) == 1
 
     def test_ensure_ops_table_idempotent(self, empty_cell):
-        from flexsearch.core import ensure_ops_table
+        from flex.core import ensure_ops_table
         ensure_ops_table(empty_cell)
         ensure_ops_table(empty_cell)  # should not raise
         count = empty_cell.execute(
@@ -332,7 +332,7 @@ class TestOpsTable:
         assert count == 1
 
     def test_log_op_basic(self, empty_cell):
-        from flexsearch.core import log_op
+        from flex.core import log_op
         log_op(empty_cell, 'build_similarity_graph', '_enrich_source_graph',
                rows_affected=100, source='meditate.py')
         rows = empty_cell.execute("SELECT * FROM _ops").fetchall()
@@ -346,7 +346,7 @@ class TestOpsTable:
 
     def test_log_op_with_params(self, empty_cell):
         import json
-        from flexsearch.core import log_op
+        from flex.core import log_op
         log_op(empty_cell, 'build_similarity_graph', '_enrich_source_graph',
                params={'threshold': 0.55, 'where': 'chunks>=20'},
                rows_affected=1037, source='rebuild_all.py')
@@ -356,20 +356,20 @@ class TestOpsTable:
         assert params['where'] == 'chunks>=20'
 
     def test_log_op_with_sql(self, empty_cell):
-        from flexsearch.core import log_op
+        from flex.core import log_op
         log_op(empty_cell, 'run_sandbox', '_enrich_*',
                sql='result["test"] = 42', source='meditate.py')
         row = dict(empty_cell.execute("SELECT * FROM _ops").fetchone())
         assert row['sql'] == 'result["test"] = 42'
 
     def test_log_op_params_none(self, empty_cell):
-        from flexsearch.core import log_op
+        from flex.core import log_op
         log_op(empty_cell, 'install_views', '_views', source='views.py')
         row = dict(empty_cell.execute("SELECT * FROM _ops").fetchone())
         assert row['params'] is None
 
     def test_multiple_ops_ordered(self, empty_cell):
-        from flexsearch.core import log_op
+        from flex.core import log_op
         log_op(empty_cell, 'op1', 'target1', source='a.py')
         log_op(empty_cell, 'op2', 'target2', source='b.py')
         log_op(empty_cell, 'op3', 'target3', source='c.py')
@@ -379,7 +379,7 @@ class TestOpsTable:
         assert [r[0] for r in rows] == ['op1', 'op2', 'op3']
 
     def test_ops_queryable_by_operation(self, empty_cell):
-        from flexsearch.core import log_op
+        from flex.core import log_op
         log_op(empty_cell, 'build_similarity_graph', '_enrich_source_graph',
                params={'threshold': 0.5}, source='test')
         log_op(empty_cell, 'build_similarity_graph', '_enrich_source_graph',
@@ -396,7 +396,7 @@ class TestOpsTable:
 
     def test_ops_stays_small(self, empty_cell):
         """_ops logs mutations, not queries — stays at tens of entries."""
-        from flexsearch.core import log_op
+        from flex.core import log_op
         # Simulate a typical meditate run
         log_op(empty_cell, 'rebuild_warmup_types', '_types_source_warmup',
                rows_affected=1196, source='rebuild_all.py')
@@ -416,12 +416,12 @@ class TestValidateView:
     """_validate_view checks 1:1 invariant."""
 
     def test_valid_view_passes(self, qmem_cell):
-        from flexsearch.views import regenerate_views, _validate_view
+        from flex.views import regenerate_views, _validate_view
         regenerate_views(qmem_cell, views={'sections': 'chunk'})
         assert _validate_view(qmem_cell, 'sections') is True
 
     def test_multiplied_view_raises(self, qmem_cell):
-        from flexsearch.views import _validate_view
+        from flex.views import _validate_view
         # Create a view that multiplies rows via 1:N join
         qmem_cell.execute("""
             CREATE VIEW bad_view AS

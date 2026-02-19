@@ -1,4 +1,4 @@
-"""Tests for flexsearch.registry — cell catalog with UUID identity."""
+"""Tests for flex.registry — cell catalog with UUID identity."""
 
 import sqlite3
 import pytest
@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 # Guard: skip if registry not importable
 try:
-    from flexsearch.registry import (
+    from flex.registry import (
         register_cell, unregister_cell, resolve_cell,
         resolve_cell_for_path, list_cells, discover_cells,
         _open_registry, FLEX_HOME, REGISTRY_DB,
@@ -16,7 +16,7 @@ try:
 except ImportError:
     _can_import = False
 
-pytestmark = pytest.mark.skipif(not _can_import, reason="flexsearch not importable")
+pytestmark = pytest.mark.skipif(not _can_import, reason="flex not importable")
 
 
 @pytest.fixture
@@ -24,9 +24,9 @@ def tmp_registry(tmp_path, monkeypatch):
     """Redirect registry to tmp dir so tests don't touch real ~/.flex/."""
     reg_home = tmp_path / ".flex"
     reg_db = reg_home / "registry.db"
-    monkeypatch.setattr("flexsearch.registry.FLEX_HOME", reg_home)
-    monkeypatch.setattr("flexsearch.registry.REGISTRY_DB", reg_db)
-    monkeypatch.setattr("flexsearch.registry.CELLS_DIR", tmp_path / "cells")
+    monkeypatch.setattr("flex.registry.FLEX_HOME", reg_home)
+    monkeypatch.setattr("flex.registry.REGISTRY_DB", reg_db)
+    monkeypatch.setattr("flex.registry.CELLS_DIR", tmp_path / "cells")
     return tmp_path
 
 

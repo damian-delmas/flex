@@ -1,5 +1,5 @@
 """
-Tests for flexsearch/retrieve/vec_ops.py — VectorCache + vec_ops pipeline
+Tests for flex/retrieve/vec_ops.py — VectorCache + vec_ops pipeline
 
 Tests: matrix multiply, temporal decay, contrastive, MMR diversity,
 SQL pre-filter, centroid (like:), trajectory (from:to:), local_communities,
@@ -16,7 +16,7 @@ import pytest
 
 def _can_import():
     try:
-        from flexsearch.retrieve.vec_ops import VectorCache
+        from flex.retrieve.vec_ops import VectorCache
         return True
     except ImportError:
         return False
@@ -24,7 +24,7 @@ def _can_import():
 
 pytestmark = pytest.mark.skipif(
     not _can_import(),
-    reason="flexsearch.retrieve.vec_ops not yet implemented"
+    reason="flex.retrieve.vec_ops not yet implemented"
 )
 
 
@@ -77,7 +77,7 @@ def vec_db():
 @pytest.fixture
 def cache(vec_db):
     """Loaded VectorCache from vec_db."""
-    from flexsearch.retrieve.vec_ops import VectorCache
+    from flex.retrieve.vec_ops import VectorCache
     vc = VectorCache()
     vc.load_from_db(vec_db, '_raw_chunks', 'embedding', 'id')
     return vc
@@ -145,7 +145,7 @@ def mod_db():
 @pytest.fixture
 def mod_cache(mod_db):
     """VectorCache with modulation columns loaded."""
-    from flexsearch.retrieve.vec_ops import VectorCache
+    from flex.retrieve.vec_ops import VectorCache
     vc = VectorCache()
     vc.load_from_db(mod_db, '_raw_chunks', 'embedding', 'id')
     vc.load_columns(mod_db, '_raw_chunks', 'id')
@@ -176,7 +176,7 @@ class TestLoad:
         assert cache.memory_mb > 0
 
     def test_empty_table_returns_empty(self):
-        from flexsearch.retrieve.vec_ops import VectorCache
+        from flex.retrieve.vec_ops import VectorCache
         conn = sqlite3.connect(':memory:')
         conn.execute("CREATE TABLE t (id TEXT, embedding BLOB)")
         vc = VectorCache()
@@ -216,7 +216,7 @@ class TestSearch:
         assert len(results) <= 2
 
     def test_empty_cache_returns_empty(self):
-        from flexsearch.retrieve.vec_ops import VectorCache
+        from flex.retrieve.vec_ops import VectorCache
         vc = VectorCache()
         results = vc.search(_make_vec([1.0, 0.0, 0.0]))
         assert results == []
@@ -349,7 +349,7 @@ class TestParseModifiers:
     """parse_modifiers() parses modifier strings into dicts."""
 
     def test_empty_string(self):
-        from flexsearch.retrieve.vec_ops import parse_modifiers
+        from flex.retrieve.vec_ops import parse_modifiers
         result = parse_modifiers('')
         assert result['recent'] is False
         assert result['diverse'] is False
@@ -357,39 +357,39 @@ class TestParseModifiers:
         assert result['limit'] is None
 
     def test_none(self):
-        from flexsearch.retrieve.vec_ops import parse_modifiers
+        from flex.retrieve.vec_ops import parse_modifiers
         result = parse_modifiers(None)
         assert result['recent'] is False
 
     def test_recent_no_days(self):
-        from flexsearch.retrieve.vec_ops import parse_modifiers
+        from flex.retrieve.vec_ops import parse_modifiers
         result = parse_modifiers('recent')
         assert result['recent'] is True
         assert result['recent_days'] is None
 
     def test_recent_with_days(self):
-        from flexsearch.retrieve.vec_ops import parse_modifiers
+        from flex.retrieve.vec_ops import parse_modifiers
         result = parse_modifiers('recent:7')
         assert result['recent'] is True
         assert result['recent_days'] == 7
 
     def test_unlike(self):
-        from flexsearch.retrieve.vec_ops import parse_modifiers
+        from flex.retrieve.vec_ops import parse_modifiers
         result = parse_modifiers('unlike:jwt')
         assert result['unlike'] == 'jwt'
 
     def test_diverse(self):
-        from flexsearch.retrieve.vec_ops import parse_modifiers
+        from flex.retrieve.vec_ops import parse_modifiers
         result = parse_modifiers('diverse')
         assert result['diverse'] is True
 
     def test_limit(self):
-        from flexsearch.retrieve.vec_ops import parse_modifiers
+        from flex.retrieve.vec_ops import parse_modifiers
         result = parse_modifiers('limit:50')
         assert result['limit'] == 50
 
     def test_composed(self):
-        from flexsearch.retrieve.vec_ops import parse_modifiers
+        from flex.retrieve.vec_ops import parse_modifiers
         result = parse_modifiers('recent:7 diverse unlike:jwt limit:50')
         assert result['recent'] is True
         assert result['recent_days'] == 7
@@ -398,37 +398,37 @@ class TestParseModifiers:
         assert result['limit'] == 50
 
     def test_like_token(self):
-        from flexsearch.retrieve.vec_ops import parse_modifiers
+        from flex.retrieve.vec_ops import parse_modifiers
         result = parse_modifiers('like:abc,def,ghi')
         assert result['like'] == ['abc', 'def', 'ghi']
 
     def test_trajectory_tokens(self):
-        from flexsearch.retrieve.vec_ops import parse_modifiers
+        from flex.retrieve.vec_ops import parse_modifiers
         result = parse_modifiers('diverse from:naive understanding to:expert framework')
         assert result['trajectory_from'] == 'naive understanding'
         assert result['trajectory_to'] == 'expert framework'
         assert result['diverse'] is True
 
     def test_local_communities_token(self):
-        from flexsearch.retrieve.vec_ops import parse_modifiers
+        from flex.retrieve.vec_ops import parse_modifiers
         result = parse_modifiers('local_communities')
         assert result['local_communities'] is True
 
     def test_detect_communities_alias(self):
-        from flexsearch.retrieve.vec_ops import parse_modifiers
+        from flex.retrieve.vec_ops import parse_modifiers
         result = parse_modifiers('detect_communities')
         assert result['local_communities'] is True
 
     def test_dead_tokens_ignored(self):
         """kind: and community: silently ignored."""
-        from flexsearch.retrieve.vec_ops import parse_modifiers
+        from flex.retrieve.vec_ops import parse_modifiers
         result = parse_modifiers('kind:prompt community:3 diverse')
         assert 'kind' not in result
         assert 'community' not in result
         assert result['diverse'] is True
 
     def test_unknown_token_ignored(self):
-        from flexsearch.retrieve.vec_ops import parse_modifiers
+        from flex.retrieve.vec_ops import parse_modifiers
         result = parse_modifiers('hubs foo bar')
         assert result['recent'] is False
 
@@ -447,7 +447,7 @@ class TestLoadColumns:
 
     def test_missing_graph_table_is_safe(self):
         """Cells without _enrich_source_graph don't crash."""
-        from flexsearch.retrieve.vec_ops import VectorCache
+        from flex.retrieve.vec_ops import VectorCache
         conn = sqlite3.connect(':memory:')
         conn.row_factory = sqlite3.Row
         conn.execute("CREATE TABLE _raw_chunks (id TEXT PRIMARY KEY, content TEXT, embedding BLOB, timestamp INTEGER)")
@@ -618,7 +618,7 @@ class TestAuthorizerGuard:
     @pytest.fixture
     def udf_conn(self, mod_db):
         """mod_db connection with vec_ops UDF registered."""
-        from flexsearch.retrieve.vec_ops import VectorCache, register_vec_ops
+        from flex.retrieve.vec_ops import VectorCache, register_vec_ops
         cache = VectorCache()
         cache.load_from_db(mod_db, '_raw_chunks', 'embedding', 'id')
         cache.load_columns(mod_db, '_raw_chunks', 'id')

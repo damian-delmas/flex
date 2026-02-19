@@ -1,7 +1,7 @@
 """
 Schema Contract Tests — Chunk-Atom Architectural Invariants
 
-Validates the seven principles without importing flexsearch.
+Validates the seven principles without importing flex.
 Pure SQL against in-memory fixtures. These are acceptance criteria
 for Plans 1-4.
 
@@ -138,7 +138,7 @@ class TestSourceInvariant:
 
     def test_validate_cell_passes(self, qmem_cell):
         """validate_cell() should pass on a well-formed cell."""
-        from flexsearch.core import validate_cell
+        from flex.core import validate_cell
         validate_cell(qmem_cell)  # should not raise
 
 

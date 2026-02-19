@@ -1,5 +1,5 @@
 """
-Tests for flexsearch.modules.docpac.compile.worker
+Tests for flex.modules.docpac.compile.worker
 
 Covers index_file() and process_queue() — the incremental indexing pipeline.
 """
@@ -13,7 +13,7 @@ import pytest
 import numpy as np
 
 try:
-    from flexsearch.modules.docpac.compile.worker import (
+    from flex.modules.docpac.compile.worker import (
         index_file, process_queue, make_source_id, make_chunk_id,
         _find_context_root, _graph_stale, GRAPH_REFRESH_THRESHOLD,
     )
@@ -248,14 +248,14 @@ class TestProcessQueue:
 
     def test_no_queue_db(self, monkeypatch):
         """Missing queue.db: returns clean stats."""
-        import flexsearch.modules.docpac.compile.worker as w
+        import flex.modules.docpac.compile.worker as w
         monkeypatch.setattr(w, 'QUEUE_DB', pytest.importorskip('pathlib').Path('/nonexistent/queue.db'))
         stats = process_queue(_mock_embed_fn)
         assert stats == {'processed': 0, 'indexed': 0, 'skipped': 0}
 
     def test_empty_queue(self, tmp_path, monkeypatch):
         """Empty pending table: returns clean stats."""
-        import flexsearch.modules.docpac.compile.worker as w
+        import flex.modules.docpac.compile.worker as w
         qdb = tmp_path / "queue.db"
         qconn = sqlite3.connect(str(qdb))
         qconn.execute("CREATE TABLE pending (path TEXT PRIMARY KEY, ts INTEGER)")
@@ -268,7 +268,7 @@ class TestProcessQueue:
 
     def test_no_pending_table(self, tmp_path, monkeypatch):
         """Queue DB exists but no pending table: returns clean stats."""
-        import flexsearch.modules.docpac.compile.worker as w
+        import flex.modules.docpac.compile.worker as w
         qdb = tmp_path / "queue.db"
         sqlite3.connect(str(qdb)).close()
 
@@ -278,7 +278,7 @@ class TestProcessQueue:
 
     def test_file_with_no_cell(self, tmp_path, monkeypatch):
         """File that doesn't resolve to any cell: cleared from queue."""
-        import flexsearch.modules.docpac.compile.worker as w
+        import flex.modules.docpac.compile.worker as w
 
         qdb = tmp_path / "queue.db"
         qconn = sqlite3.connect(str(qdb))
@@ -313,13 +313,13 @@ class TestGraphStale:
 
     def test_never_built(self, docpac_cell):
         """_ops exists but no graph build: returns True."""
-        from flexsearch.core import ensure_ops_table
+        from flex.core import ensure_ops_table
         ensure_ops_table(docpac_cell)
         assert _graph_stale(docpac_cell) is True
 
     def test_below_threshold(self, docpac_cell):
         """Few sources since last graph: returns False."""
-        from flexsearch.core import ensure_ops_table
+        from flex.core import ensure_ops_table
         ensure_ops_table(docpac_cell)
 
         # Graph build at t=1000
@@ -338,7 +338,7 @@ class TestGraphStale:
 
     def test_above_threshold(self, docpac_cell):
         """Enough sources since last graph: returns True."""
-        from flexsearch.core import ensure_ops_table
+        from flex.core import ensure_ops_table
         ensure_ops_table(docpac_cell)
 
         # Graph build at t=1000

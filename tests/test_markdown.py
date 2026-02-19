@@ -1,5 +1,5 @@
 """
-Tests for flexsearch.compile.markdown — COMPILE primitives.
+Tests for flex.compile.markdown — COMPILE primitives.
 
 Contract:
   normalize_headers(content) -> str (promoted headers, source untouched)
@@ -16,7 +16,7 @@ Run with: pytest tests/test_markdown.py -v
 """
 
 import pytest
-from flexsearch.compile.markdown import normalize_headers, extract_frontmatter, split_sections
+from flex.compile.markdown import normalize_headers, extract_frontmatter, split_sections
 
 
 # =============================================================================

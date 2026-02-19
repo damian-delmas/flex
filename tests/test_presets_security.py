@@ -12,7 +12,7 @@ from pathlib import Path
 
 def _can_import():
     try:
-        from flexsearch.retrieve.presets import PresetLoader
+        from flex.retrieve.presets import PresetLoader
         return True
     except ImportError:
         return False
@@ -20,7 +20,7 @@ def _can_import():
 
 pytestmark = pytest.mark.skipif(
     not _can_import(),
-    reason="flexsearch.retrieve.presets not yet implemented"
+    reason="flex.retrieve.presets not yet implemented"
 )
 
 
@@ -44,14 +44,14 @@ class TestSQLInjection:
     """Verify _interpolate escapes dangerous param values."""
 
     def test_single_quote_escaped(self, secure_db):
-        from flexsearch.retrieve.presets import PresetLoader
+        from flex.retrieve.presets import PresetLoader
         loader = PresetLoader(secure_db)
         # This should NOT cause an error — quotes should be escaped
         results = loader.execute(secure_db, 'search', {'term': "it's"})
         assert isinstance(results, list)
 
     def test_injection_attempt_does_not_destroy_data(self, secure_db):
-        from flexsearch.retrieve.presets import PresetLoader
+        from flex.retrieve.presets import PresetLoader
         loader = PresetLoader(secure_db)
         # Classic injection attempt
         try:
@@ -70,7 +70,7 @@ class TestPresetEdgeCases:
     """Edge cases: empty presets, caching, missing table."""
 
     def test_empty_sql_text(self, secure_db):
-        from flexsearch.retrieve.presets import PresetLoader
+        from flex.retrieve.presets import PresetLoader
         secure_db.execute("INSERT OR REPLACE INTO _presets (name, description, params, sql) VALUES ('empty', '', '', '')")
         secure_db.commit()
         loader = PresetLoader(secure_db)
@@ -78,14 +78,14 @@ class TestPresetEdgeCases:
         assert preset['queries'] == []
 
     def test_cache_returns_same_object(self, secure_db):
-        from flexsearch.retrieve.presets import PresetLoader
+        from flex.retrieve.presets import PresetLoader
         loader = PresetLoader(secure_db)
         p1 = loader.load('search')
         p2 = loader.load('search')
         assert p1 is p2  # same cached object
 
     def test_list_presets_no_table(self):
-        from flexsearch.retrieve.presets import PresetLoader
+        from flex.retrieve.presets import PresetLoader
         conn = sqlite3.connect(':memory:')
         conn.row_factory = sqlite3.Row
         loader = PresetLoader(conn)
@@ -93,7 +93,7 @@ class TestPresetEdgeCases:
         conn.close()
 
     def test_multi_query_error_captured(self, secure_db):
-        from flexsearch.retrieve.presets import PresetLoader
+        from flex.retrieve.presets import PresetLoader
         secure_db.execute("INSERT OR REPLACE INTO _presets (name, description, params, sql) VALUES (?, ?, ?, ?)", (
             'bad-multi', 'Multi with bad query', '',
             "-- @multi: true\n-- @query: good\nSELECT COUNT(*) as n FROM _raw_chunks;\n-- @query: bad\nSELECT * FROM nonexistent_table;"))

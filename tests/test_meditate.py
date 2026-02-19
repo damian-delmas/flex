@@ -1,5 +1,5 @@
 """
-Tests for flexsearch/manage/meditate.py — offline graph intelligence.
+Tests for flex/manage/meditate.py — offline graph intelligence.
 
 Tests: build_similarity_graph, compute_scores, persist, run_sandbox.
 
@@ -13,7 +13,7 @@ import pytest
 
 def _can_import():
     try:
-        from flexsearch.manage.meditate import (
+        from flex.manage.meditate import (
             build_similarity_graph, compute_scores, persist, run_sandbox
         )
         return True
@@ -23,7 +23,7 @@ def _can_import():
 
 pytestmark = pytest.mark.skipif(
     not _can_import(),
-    reason="flexsearch.manage.meditate not yet implemented"
+    reason="flex.manage.meditate not yet implemented"
 )
 
 
@@ -71,7 +71,7 @@ def graph_db():
 @pytest.fixture
 def small_graph(graph_db):
     """Pre-built graph from graph_db."""
-    from flexsearch.manage.meditate import build_similarity_graph
+    from flex.manage.meditate import build_similarity_graph
     G, edge_count = build_similarity_graph(
         graph_db, '_raw_sources', 'source_id', 'embedding', threshold=0.3
     )
@@ -86,7 +86,7 @@ class TestBuildGraph:
     """Build NetworkX graph from embedding similarity."""
 
     def test_returns_graph_and_count(self, graph_db):
-        from flexsearch.manage.meditate import build_similarity_graph
+        from flex.manage.meditate import build_similarity_graph
         G, count = build_similarity_graph(
             graph_db, '_raw_sources', 'source_id', 'embedding', threshold=0.5
         )
@@ -95,14 +95,14 @@ class TestBuildGraph:
         assert count > 0
 
     def test_nodes_match_sources(self, graph_db):
-        from flexsearch.manage.meditate import build_similarity_graph
+        from flex.manage.meditate import build_similarity_graph
         G, _ = build_similarity_graph(
             graph_db, '_raw_sources', 'source_id', 'embedding', threshold=0.1
         )
         assert set(G.nodes()) == {'s1', 's2', 's3', 's4', 's5'}
 
     def test_similar_sources_connected(self, graph_db):
-        from flexsearch.manage.meditate import build_similarity_graph
+        from flex.manage.meditate import build_similarity_graph
         G, _ = build_similarity_graph(
             graph_db, '_raw_sources', 'source_id', 'embedding', threshold=0.8
         )
@@ -110,7 +110,7 @@ class TestBuildGraph:
         assert G.has_edge('s1', 's2') or G.has_edge('s2', 's1')
 
     def test_orthogonal_sources_not_connected(self, graph_db):
-        from flexsearch.manage.meditate import build_similarity_graph
+        from flex.manage.meditate import build_similarity_graph
         G, _ = build_similarity_graph(
             graph_db, '_raw_sources', 'source_id', 'embedding', threshold=0.5
         )
@@ -118,7 +118,7 @@ class TestBuildGraph:
         assert not G.has_edge('s1', 's4')
 
     def test_top_k_limits_edges(self, graph_db):
-        from flexsearch.manage.meditate import build_similarity_graph
+        from flex.manage.meditate import build_similarity_graph
         G, _ = build_similarity_graph(
             graph_db, '_raw_sources', 'source_id', 'embedding',
             threshold=0.1, top_k=1
@@ -128,7 +128,7 @@ class TestBuildGraph:
             assert G.degree(node) >= 0  # graph exists
 
     def test_empty_table_returns_none(self):
-        from flexsearch.manage.meditate import build_similarity_graph
+        from flex.manage.meditate import build_similarity_graph
         conn = sqlite3.connect(':memory:')
         conn.execute("CREATE TABLE t (id TEXT, embedding BLOB)")
         G, count = build_similarity_graph(conn, 't', 'id', 'embedding')
@@ -137,7 +137,7 @@ class TestBuildGraph:
         conn.close()
 
     def test_edges_have_weight(self, graph_db):
-        from flexsearch.manage.meditate import build_similarity_graph
+        from flex.manage.meditate import build_similarity_graph
         G, _ = build_similarity_graph(
             graph_db, '_raw_sources', 'source_id', 'embedding', threshold=0.5
         )
@@ -154,7 +154,7 @@ class TestComputeScores:
     """Run graph algorithms: Louvain, PageRank, hubs, bridges."""
 
     def test_returns_expected_keys(self, small_graph):
-        from flexsearch.manage.meditate import compute_scores
+        from flex.manage.meditate import compute_scores
         scores = compute_scores(small_graph)
         assert 'communities' in scores
         assert 'centralities' in scores
@@ -162,26 +162,26 @@ class TestComputeScores:
         assert 'bridges' in scores
 
     def test_centralities_sum_to_one(self, small_graph):
-        from flexsearch.manage.meditate import compute_scores
+        from flex.manage.meditate import compute_scores
         scores = compute_scores(small_graph)
         if scores['centralities']:
             total = sum(scores['centralities'].values())
             assert abs(total - 1.0) < 0.01
 
     def test_hubs_are_subset_of_nodes(self, small_graph):
-        from flexsearch.manage.meditate import compute_scores
+        from flex.manage.meditate import compute_scores
         scores = compute_scores(small_graph)
         all_nodes = set(small_graph.nodes())
         assert set(scores['hubs']) <= all_nodes
 
     def test_bridges_are_subset_of_nodes(self, small_graph):
-        from flexsearch.manage.meditate import compute_scores
+        from flex.manage.meditate import compute_scores
         scores = compute_scores(small_graph)
         all_nodes = set(small_graph.nodes())
         assert set(scores['bridges']) <= all_nodes
 
     def test_none_graph_returns_empty(self):
-        from flexsearch.manage.meditate import compute_scores
+        from flex.manage.meditate import compute_scores
         scores = compute_scores(None)
         assert scores['communities'] == []
         assert scores['centralities'] == {}
@@ -189,7 +189,7 @@ class TestComputeScores:
         assert scores['bridges'] == []
 
     def test_communities_have_members(self, small_graph):
-        from flexsearch.manage.meditate import compute_scores
+        from flex.manage.meditate import compute_scores
         scores = compute_scores(small_graph)
         for comm in scores['communities']:
             assert 'id' in comm
@@ -205,7 +205,7 @@ class TestPersist:
     """Write graph scores to enrichment table."""
 
     def test_creates_table_and_rows(self, graph_db, small_graph):
-        from flexsearch.manage.meditate import compute_scores, persist
+        from flex.manage.meditate import compute_scores, persist
         scores = compute_scores(small_graph)
         persist(graph_db, scores, '_enrich_source_graph', 'source_id')
 
@@ -215,7 +215,7 @@ class TestPersist:
         assert count > 0
 
     def test_persists_centrality(self, graph_db, small_graph):
-        from flexsearch.manage.meditate import compute_scores, persist
+        from flex.manage.meditate import compute_scores, persist
         scores = compute_scores(small_graph)
         persist(graph_db, scores, '_enrich_source_graph', 'source_id')
 
@@ -226,7 +226,7 @@ class TestPersist:
         assert row[0] > 0
 
     def test_idempotent_wipe_and_rewrite(self, graph_db, small_graph):
-        from flexsearch.manage.meditate import compute_scores, persist
+        from flex.manage.meditate import compute_scores, persist
         scores = compute_scores(small_graph)
         persist(graph_db, scores, '_enrich_source_graph', 'source_id')
         count1 = graph_db.execute(
@@ -240,7 +240,7 @@ class TestPersist:
         assert count1 == count2
 
     def test_auto_detects_id_col(self, graph_db, small_graph):
-        from flexsearch.manage.meditate import compute_scores, persist
+        from flex.manage.meditate import compute_scores, persist
         scores = compute_scores(small_graph)
         # 'source' in table name → source_id auto-detected
         persist(graph_db, scores, '_enrich_source_graph')
@@ -259,25 +259,25 @@ class TestSandbox:
     """Sandboxed networkx script execution."""
 
     def test_basic_script(self, small_graph, graph_db):
-        from flexsearch.manage.meditate import run_sandbox
+        from flex.manage.meditate import run_sandbox
         result = run_sandbox(graph_db, small_graph,
             "result['count'] = len(list(graph.nodes()))")
         assert result['count'] == 5
 
     def test_script_error_returns_error(self, small_graph, graph_db):
-        from flexsearch.manage.meditate import run_sandbox
+        from flex.manage.meditate import run_sandbox
         result = run_sandbox(graph_db, small_graph, "1/0")
         assert 'error' in result
         assert result['type'] == 'ZeroDivisionError'
 
     def test_numpy_available(self, small_graph, graph_db):
-        from flexsearch.manage.meditate import run_sandbox
+        from flex.manage.meditate import run_sandbox
         result = run_sandbox(graph_db, small_graph,
             "result['pi'] = float(np.pi)")
         assert abs(result['pi'] - 3.14159) < 0.001
 
     def test_networkx_available(self, small_graph, graph_db):
-        from flexsearch.manage.meditate import run_sandbox
+        from flex.manage.meditate import run_sandbox
         result = run_sandbox(graph_db, small_graph,
             "result['density'] = float(nx.density(graph))")
         assert 'density' in result
@@ -285,30 +285,30 @@ class TestSandbox:
     # --- Security tests ---
 
     def test_import_blocked(self, small_graph, graph_db):
-        from flexsearch.manage.meditate import run_sandbox
+        from flex.manage.meditate import run_sandbox
         result = run_sandbox(graph_db, small_graph, "import os")
         assert 'error' in result
 
     def test_open_blocked(self, small_graph, graph_db):
-        from flexsearch.manage.meditate import run_sandbox
+        from flex.manage.meditate import run_sandbox
         result = run_sandbox(graph_db, small_graph,
             "open('/etc/passwd')")
         assert 'error' in result
 
     def test_dunder_import_blocked(self, small_graph, graph_db):
-        from flexsearch.manage.meditate import run_sandbox
+        from flex.manage.meditate import run_sandbox
         result = run_sandbox(graph_db, small_graph,
             "__import__('os')")
         assert 'error' in result
 
     def test_exec_blocked(self, small_graph, graph_db):
-        from flexsearch.manage.meditate import run_sandbox
+        from flex.manage.meditate import run_sandbox
         result = run_sandbox(graph_db, small_graph,
             "exec('import os')")
         assert 'error' in result
 
     def test_eval_blocked(self, small_graph, graph_db):
-        from flexsearch.manage.meditate import run_sandbox
+        from flex.manage.meditate import run_sandbox
         result = run_sandbox(graph_db, small_graph,
             "eval('__import__(\"os\")')")
         assert 'error' in result

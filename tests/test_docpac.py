@@ -1,5 +1,5 @@
 """
-Tests for flexsearch/compile/docpac.py
+Tests for flex/compile/docpac.py
 
 Tests parse_docpac(): walk a doc-pac directory, map folders to semantic metadata.
 
@@ -21,7 +21,7 @@ from pathlib import Path
 
 def _can_import():
     try:
-        from flexsearch.compile.docpac import parse_docpac, DocPacEntry
+        from flex.compile.docpac import parse_docpac, DocPacEntry
         return True
     except ImportError:
         return False
@@ -29,7 +29,7 @@ def _can_import():
 
 pytestmark = pytest.mark.skipif(
     not _can_import(),
-    reason="flexsearch.compile.docpac not yet implemented (Plan 1)"
+    reason="flex.compile.docpac not yet implemented (Plan 1)"
 )
 
 
@@ -113,7 +113,7 @@ class TestFolderMapping:
     """Folder names map to (temporal, doc_type) tuples."""
 
     def test_changes_code_is_past_changelog(self, docpac_tree):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         entries = parse_docpac(str(docpac_tree))
         code_entries = [e for e in entries if 'changes/code' in e.path]
         assert len(code_entries) == 1
@@ -121,7 +121,7 @@ class TestFolderMapping:
         assert code_entries[0].doc_type == 'changelog'
 
     def test_intended_design_is_future_design(self, docpac_tree):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         entries = parse_docpac(str(docpac_tree))
         design_entries = [e for e in entries if 'intended/design' in e.path]
         assert len(design_entries) == 1
@@ -129,7 +129,7 @@ class TestFolderMapping:
         assert design_entries[0].doc_type == 'design'
 
     def test_current_is_present_architecture(self, docpac_tree):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         entries = parse_docpac(str(docpac_tree))
         current_entries = [e for e in entries if '/current/' in e.path and not e.skip]
         assert len(current_entries) == 2  # architecture.md + schema.md
@@ -138,7 +138,7 @@ class TestFolderMapping:
             assert e.doc_type == 'architecture'
 
     def test_intended_proximate_is_future_vision(self, docpac_tree):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         entries = parse_docpac(str(docpac_tree))
         vision_entries = [e for e in entries if 'intended/proximate' in e.path]
         assert len(vision_entries) >= 1
@@ -147,7 +147,7 @@ class TestFolderMapping:
             assert e.doc_type == 'vision'
 
     def test_knowledge_is_exogenous(self, docpac_tree):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         entries = parse_docpac(str(docpac_tree))
         know_entries = [e for e in entries if '/knowledge/' in e.path]
         assert len(know_entries) == 1
@@ -163,19 +163,19 @@ class TestSkipFolders:
     """buffer/, _raw/, _qmem/, cache/ are marked skip=True."""
 
     def test_buffer_is_skipped(self, docpac_tree):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         entries = parse_docpac(str(docpac_tree))
         buffer_entries = [e for e in entries if '/buffer/' in e.path]
         assert all(e.skip for e in buffer_entries), "buffer/ files should be skipped"
 
     def test_raw_is_skipped(self, docpac_tree):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         entries = parse_docpac(str(docpac_tree))
         raw_entries = [e for e in entries if '/_raw/' in e.path]
         assert all(e.skip for e in raw_entries), "_raw/ files should be skipped"
 
     def test_indexable_excludes_skipped(self, docpac_tree):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         entries = parse_docpac(str(docpac_tree))
         indexable = [e for e in entries if not e.skip]
         for e in indexable:
@@ -195,7 +195,7 @@ class TestFrameBoundary:
     def test_nested_changelog_is_past(self, nested_docpac):
         """The whole point: changes/code inside a nested doc-pac is PAST,
         not future. Frame resets at the boundary."""
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         entries = parse_docpac(str(nested_docpac))
         nested_code = [e for e in entries if 'sql-first/changes/code' in e.path]
         assert len(nested_code) == 1
@@ -204,7 +204,7 @@ class TestFrameBoundary:
 
     def test_nested_current_is_present(self, nested_docpac):
         """current/ inside a nested doc-pac is PRESENT, not future."""
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         entries = parse_docpac(str(nested_docpac))
         nested_current = [e for e in entries if 'sql-first/current' in e.path]
         assert len(nested_current) == 1
@@ -212,7 +212,7 @@ class TestFrameBoundary:
 
     def test_plans_changelog_is_past(self, nested_docpac):
         """plans/plan-a/ is also a doc-pac boundary. Its changes/code/ is past."""
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         entries = parse_docpac(str(nested_docpac))
         plan_code = [e for e in entries if 'plan-a/changes/code' in e.path]
         assert len(plan_code) == 1
@@ -221,7 +221,7 @@ class TestFrameBoundary:
 
     def test_plans_intended_is_future(self, nested_docpac):
         """plans/plan-a/intended/ resolves to future relative to plan-a boundary."""
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         entries = parse_docpac(str(nested_docpac))
         plan_intended = [e for e in entries if 'plan-a/intended' in e.path]
         assert len(plan_intended) == 1
@@ -229,7 +229,7 @@ class TestFrameBoundary:
 
     def test_top_level_unaffected(self, nested_docpac):
         """Top-level current/ still resolves to present at root boundary."""
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         entries = parse_docpac(str(nested_docpac))
         top = [e for e in entries if e.path.endswith('/current/arch.md')]
         assert len(top) == 1
@@ -244,7 +244,7 @@ class TestFacetRemoved:
     """Facets are domain concepts assigned by init scripts, not docpac."""
 
     def test_entries_have_no_facet_attribute(self, nested_docpac):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         entries = parse_docpac(str(nested_docpac))
         assert len(entries) > 0
         assert not hasattr(entries[0], 'facet'), \
@@ -261,7 +261,7 @@ class TestFileDate:
     They never conflate."""
 
     def test_yymmdd_extracted_to_file_date(self, tmp_path):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         root = tmp_path / "ctx"
         (root / "changes" / "code").mkdir(parents=True)
         (root / "changes" / "code" / "260211-refactor.md").write_text("# Log")
@@ -271,7 +271,7 @@ class TestFileDate:
         assert code[0].temporal == 'past'  # semantic, not overridden
 
     def test_yymmdd_hhmm_extracted(self, tmp_path):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         root = tmp_path / "ctx"
         (root / "changes" / "code").mkdir(parents=True)
         (root / "changes" / "code" / "260211-1538_sql-refactor.md").write_text("# Log")
@@ -281,7 +281,7 @@ class TestFileDate:
         assert code[0].temporal == 'past'
 
     def test_no_date_prefix_is_none(self, tmp_path):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         root = tmp_path / "ctx"
         (root / "current").mkdir(parents=True)
         (root / "current" / "architecture.md").write_text("# Arch")
@@ -322,7 +322,7 @@ class TestAllFolderMappings:
         ('plans',            ('future', 'plan')),
     ])
     def test_folder_map_entry(self, tmp_path, folder_key, expected):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         root = tmp_path / "ctx"
         target = root / folder_key
         target.mkdir(parents=True)
@@ -341,7 +341,7 @@ class TestSegmentMatching:
 
     def test_no_false_positive_on_substring(self, tmp_path):
         """'changes' should NOT match a folder named 'prechanges'."""
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         root = tmp_path / "ctx"
         (root / "prechanges" / "code").mkdir(parents=True)
         (root / "prechanges" / "code" / "file.md").write_text("# Test")
@@ -357,7 +357,7 @@ class TestTitle:
     """_extract_title produces human-readable titles."""
 
     def test_strips_temporal_prefix(self, tmp_path):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         root = tmp_path / "ctx"
         (root / "changes" / "code").mkdir(parents=True)
         (root / "changes" / "code" / "260211-1538_sql-refactor.md").write_text("# Log")
@@ -370,25 +370,25 @@ class TestEdgeCases:
     """Edge cases and return format."""
 
     def test_returns_list_of_dataclass(self, docpac_tree):
-        from flexsearch.compile.docpac import parse_docpac, DocPacEntry
+        from flex.compile.docpac import parse_docpac, DocPacEntry
         entries = parse_docpac(str(docpac_tree))
         assert isinstance(entries, list)
         assert all(isinstance(e, DocPacEntry) for e in entries)
 
     def test_paths_are_absolute(self, docpac_tree):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         entries = parse_docpac(str(docpac_tree))
         for e in entries:
             assert Path(e.path).is_absolute(), f"Path should be absolute: {e.path}"
 
     def test_empty_directory(self, tmp_path):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         empty = tmp_path / "empty"
         empty.mkdir()
         entries = parse_docpac(str(empty))
         assert entries == []
 
     def test_custom_pattern(self, docpac_tree):
-        from flexsearch.compile.docpac import parse_docpac
+        from flex.compile.docpac import parse_docpac
         entries_md = parse_docpac(str(docpac_tree), pattern='**/*.md')
         assert len(entries_md) > 0

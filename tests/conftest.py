@@ -1,8 +1,8 @@
 """
-FlexSearch Test Fixtures
+Flex Test Fixtures
 
 Provides in-memory chunk-atom databases for testing schema contracts,
-view generation, and migration correctness. No flexsearch imports needed.
+view generation, and migration correctness. No flex imports needed.
 
 Run with: pytest tests/ -v
 """

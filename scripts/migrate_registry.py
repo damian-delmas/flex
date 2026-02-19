@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from flexsearch.registry import (
+from flex.registry import (
     CELLS_ROOT, FLEX_HOME, REGISTRY_DB,
     register_cell, list_cells, _open_registry,
 )
@@ -109,7 +109,7 @@ def phase2_move_cells():
         shutil.copy2(str(old_path), str(new_path))
 
         # Move history JSONL if it exists
-        old_history = old_path.parent / "flexsearch-history.jsonl"
+        old_history = old_path.parent / "flex-history.jsonl"
         if old_history.exists():
             new_history = CELLS_DIR / f"{cell_id}-history.jsonl"
             shutil.copy2(str(old_history), str(new_history))
@@ -164,7 +164,7 @@ def phase4_create_queue():
 
 def phase5_verify():
     """Verify all cells accessible via registry."""
-    from flexsearch.registry import resolve_cell
+    from flex.registry import resolve_cell
 
     print("\nPhase 5: Verification")
     cells = list_cells()

@@ -8,8 +8,8 @@ build/
 *.egg
 
 # ONNX model weights (large binary, fetch separately)
-flexsearch/onnx/model.onnx
-flexsearch/onnx/model.onnx.data
+flex/onnx/model.onnx
+flex/onnx/model.onnx.data
 
 # Environment
 .env

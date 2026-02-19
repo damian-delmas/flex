@@ -20,14 +20,14 @@ import numpy as np
 FLEX_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(FLEX_ROOT))
 
-from flexsearch.core import open_cell
-from flexsearch.views import regenerate_views
-from flexsearch.manage.meditate import build_similarity_graph, compute_scores, persist
-from flexsearch.retrieve.presets import install_presets
+from flex.core import open_cell
+from flex.views import regenerate_views
+from flex.manage.meditate import build_similarity_graph, compute_scores, persist
+from flex.retrieve.presets import install_presets
 
-from flexsearch.registry import CELLS_ROOT
-PRESET_GENERAL = FLEX_ROOT / 'flexsearch' / 'retrieve' / 'presets' / 'general'
-PRESET_THREAD = FLEX_ROOT / 'flexsearch' / 'retrieve' / 'presets' / 'thread'
+from flex.registry import CELLS_ROOT
+PRESET_GENERAL = FLEX_ROOT / 'flex' / 'retrieve' / 'presets' / 'general'
+PRESET_THREAD = FLEX_ROOT / 'flex' / 'retrieve' / 'presets' / 'thread'
 
 CELL_PRESET_MAP = {
     'thread':          [PRESET_GENERAL, PRESET_THREAD],
@@ -241,7 +241,7 @@ def main():
         db.close()
 
     print("\n" + "=" * 60)
-    print("Done. Restart flexsearch-mcp to pick up changes.")
+    print("Done. Restart flex-mcp to pick up changes.")
     print("=" * 60)
 
 

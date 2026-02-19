@@ -1,0 +1,13 @@
+[Unit]
+Description=Flex MCP Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={{PYTHON}} -m flex.mcp_server --http --port 8081
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

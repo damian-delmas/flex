@@ -1,5 +1,5 @@
 """
-Tests for flexsearch/retrieve/presets.py — DB-backed presets
+Tests for flex/retrieve/presets.py — DB-backed presets
 
 Tests PresetLoader: read from _presets table, parse annotations, interpolate params, execute.
 
@@ -19,7 +19,7 @@ from pathlib import Path
 
 def _can_import():
     try:
-        from flexsearch.retrieve.presets import PresetLoader, install_presets
+        from flex.retrieve.presets import PresetLoader, install_presets
         return True
     except ImportError:
         return False
@@ -27,7 +27,7 @@ def _can_import():
 
 pytestmark = pytest.mark.skipif(
     not _can_import(),
-    reason="flexsearch.presets not yet implemented"
+    reason="flex.presets not yet implemented"
 )
 
 
@@ -38,7 +38,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture
 def loader(qmem_cell):
     """PresetLoader backed by qmem_cell's _presets table."""
-    from flexsearch.retrieve.presets import PresetLoader
+    from flex.retrieve.presets import PresetLoader
     return PresetLoader(qmem_cell)
 
 
@@ -151,14 +151,14 @@ class TestDefaults:
     """@params default parsing and application."""
 
     def test_defaults_parsed(self):
-        from flexsearch.retrieve.presets import PresetLoader
+        from flex.retrieve.presets import PresetLoader
         parsed = PresetLoader._parse(
             "-- @params: limit (default: 15), offset (default: 0)\nSELECT 1;",
             'test')
         assert parsed['defaults'] == {'limit': 15, 'offset': 0}
 
     def test_defaults_applied(self, qmem_cell):
-        from flexsearch.retrieve.presets import PresetLoader
+        from flex.retrieve.presets import PresetLoader
         # Insert a preset with defaults
         qmem_cell.execute(
             "INSERT OR REPLACE INTO _presets (name, description, params, sql) VALUES (?, ?, '', ?)",
@@ -170,7 +170,7 @@ class TestDefaults:
         assert len(results) == 3
 
     def test_explicit_params_override_defaults(self, qmem_cell):
-        from flexsearch.retrieve.presets import PresetLoader
+        from flex.retrieve.presets import PresetLoader
         qmem_cell.execute(
             "INSERT OR REPLACE INTO _presets (name, description, params, sql) VALUES (?, ?, '', ?)",
             ('limited', 'Test with defaults',
@@ -189,7 +189,7 @@ class TestInstallPresets:
     """Bake .sql files into _presets table."""
 
     def test_install_from_dir(self, qmem_cell, preset_dir):
-        from flexsearch.retrieve.presets import install_presets
+        from flex.retrieve.presets import install_presets
         install_presets(qmem_cell, preset_dir)
         # Verify presets were inserted
         rows = qmem_cell.execute("SELECT name FROM _presets WHERE name LIKE 'test-%'").fetchall()
@@ -198,26 +198,26 @@ class TestInstallPresets:
         assert 'test-multi' in names
 
     def test_installed_presets_executable(self, qmem_cell, preset_dir):
-        from flexsearch.retrieve.presets import install_presets, PresetLoader
+        from flex.retrieve.presets import install_presets, PresetLoader
         install_presets(qmem_cell, preset_dir)
         loader = PresetLoader(qmem_cell)
         results = loader.execute(qmem_cell, 'test-single', {'min_centrality': 0.5})
         assert len(results) >= 1
 
     def test_install_preserves_description(self, qmem_cell, preset_dir):
-        from flexsearch.retrieve.presets import install_presets
+        from flex.retrieve.presets import install_presets
         install_presets(qmem_cell, preset_dir)
         row = qmem_cell.execute(
             "SELECT description FROM _presets WHERE name = 'test-single'").fetchone()
         assert row[0] == 'A test single-query preset'
 
     def test_install_nonexistent_dir(self, qmem_cell, tmp_path):
-        from flexsearch.retrieve.presets import install_presets
+        from flex.retrieve.presets import install_presets
         # Should not raise
         install_presets(qmem_cell, tmp_path / "nope")
 
     def test_install_replaces_existing(self, qmem_cell, preset_dir):
-        from flexsearch.retrieve.presets import install_presets
+        from flex.retrieve.presets import install_presets
         install_presets(qmem_cell, preset_dir)
         # Modify file and re-install
         (preset_dir / "test-single.sql").write_text(

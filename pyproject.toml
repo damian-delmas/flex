@@ -16,10 +16,10 @@ mcp = ["mcp", "starlette", "uvicorn"]
 cluster = ["hdbscan"]
 
 [project.scripts]
-flex = "flexsearch.cli:main"
+flex = "flex.cli:main"
 
 [tool.setuptools.package-data]
-flexsearch = [
+flex = [
     "modules/claude_code/compile/hooks/*.sh",
     "data/hooks/*.sh",
     "data/systemd/*.tmpl",
@@ -30,7 +30,7 @@ flexsearch = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["flexsearch*"]
+include = ["flex*"]
 
 [build-system]
 requires = ["setuptools>=68.0"]
