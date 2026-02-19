@@ -13,44 +13,47 @@ import sys
 from pathlib import Path
 
 from flexsearch.retrieve.presets import install_presets
+from flexsearch.registry import resolve_cell, list_cells
 
 # Preset source directories
 PRESET_ROOT = Path(__file__).resolve().parent.parent / "retrieve" / "presets"
 GENERAL_DIR = PRESET_ROOT / "general"
 
-# Module-specific preset directories
+# Module-specific preset directories (keyed by cell_type from registry)
 MODULE_ROOT = Path(__file__).resolve().parent.parent / "modules"
-CLAUDE_CODE_DIR = MODULE_ROOT / "claude_code" / "presets"
-
-# Cell paths
-from flexsearch.registry import resolve_cell
-
-# Which cells get which presets
-CELL_CONFIG = {
-    'claude_code': [GENERAL_DIR, CLAUDE_CODE_DIR],
-    'claude_chat': [GENERAL_DIR],
-    'qmem': [GENERAL_DIR],
-    'inventory': [GENERAL_DIR],
-    'thread-codebase': [GENERAL_DIR],
-    'flexsearch-context': [GENERAL_DIR],
-    'axpstack-context': [GENERAL_DIR],
+MODULE_PRESETS = {
+    'claude-code': [MODULE_ROOT / "claude_code" / "presets"],
 }
+
+
+def _preset_dirs_for(cell_type: str | None) -> list[Path]:
+    """Return preset directories for a cell type. General + module-specific."""
+    dirs = [GENERAL_DIR]
+    if cell_type and cell_type in MODULE_PRESETS:
+        dirs.extend(MODULE_PRESETS[cell_type])
+    return dirs
 
 
 def install_cell(cell_name: str, preset_dirs: list[Path] = None):
     """Install presets into a single cell.
 
     Args:
-        cell_name: Name of the cell (must be in CELL_CONFIG).
-        preset_dirs: Override preset directories. If None, uses CELL_CONFIG.
+        cell_name: Name of the cell (resolved via registry).
+        preset_dirs: Override preset directories. If None, auto-detected from cell_type.
     """
-    if preset_dirs is None:
-        preset_dirs = CELL_CONFIG.get(cell_name, [GENERAL_DIR])
-
     db_path = resolve_cell(cell_name)
-    if not db_path.exists():
+    if db_path is None or not db_path.exists():
         print(f"  {cell_name}: SKIP (not found)")
         return
+
+    if preset_dirs is None:
+        # Detect cell_type from registry
+        cell_type = None
+        for cell in list_cells():
+            if cell['name'] == cell_name:
+                cell_type = cell.get('cell_type')
+                break
+        preset_dirs = _preset_dirs_for(cell_type)
 
     try:
         conn = sqlite3.connect(str(db_path), timeout=30)
@@ -82,14 +85,18 @@ def install_cell(cell_name: str, preset_dirs: list[Path] = None):
 
         conn.close()
     except sqlite3.OperationalError as e:
-        print(f"  {cell_name}: LOCKED ({e}) — retry after stopping flexsearch-worker")
+        print(f"  {cell_name}: LOCKED ({e}) — retry after stopping flex-worker")
 
 
 def install_all():
-    """Install presets into all configured cells."""
+    """Install presets into all registered cells."""
     print("Installing presets...")
-    for cell_name in CELL_CONFIG:
-        install_cell(cell_name)
+    cells = list_cells()
+    if not cells:
+        print("  No cells registered. Run 'flex init' first.")
+        return
+    for cell in cells:
+        install_cell(cell['name'])
     print("Done.")
 
 

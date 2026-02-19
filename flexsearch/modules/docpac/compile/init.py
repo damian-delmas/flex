@@ -217,7 +217,7 @@ from flexsearch.registry import CELLS_DIR, resolve_cell as _registry_resolve, re
 
 
 def derive_cell_name(corpus_path: str) -> str:
-    """Derive cell name from corpus path: /home/axp/projects/foo/context → foo-context."""
+    """Derive cell name from corpus path: ~/projects/foo/context → foo-context."""
     p = Path(corpus_path).resolve()
     # Use parent + name to distinguish context/ folders across projects
     # e.g. flexsearch/context → flexsearch-context
