@@ -140,16 +140,38 @@ def _store_raw_content(conn: sqlite3.Connection, chunk_id: str, event: dict,
     """Store raw content (old_string, new_string, write_content, web_content)."""
     for field in ['old_string', 'new_string', 'write_content', 'web_content']:
         raw = event.get(field)
-        if raw and 10 < len(raw) < 500_000:
-            h = hashlib.sha256(raw.encode()).hexdigest()
-            conn.execute(
-                "INSERT OR IGNORE INTO _raw_content VALUES (?,?,?,?,?)",
-                (h, raw, tool, len(raw), ts)
-            )
-            conn.execute(
-                "INSERT OR IGNORE INTO _edges_raw_content VALUES (?,?)",
-                (chunk_id, h)
-            )
+        if raw and len(raw) > 10:
+            _store_content_raw(conn, chunk_id, raw, tool, ts)
+
+
+def _store_content_raw(conn: sqlite3.Connection, chunk_id: str, raw: str,
+                       tool_name: str, ts: int):
+    """Store raw content — no size cap. SHA-256 dedup."""
+    raw = raw.encode('utf-8', errors='surrogatepass').decode('utf-8', errors='replace')
+    h = hashlib.sha256(raw.encode('utf-8')).hexdigest()
+    conn.execute(
+        "INSERT OR IGNORE INTO _raw_content VALUES (?,?,?,?,?)",
+        (h, raw, tool_name, len(raw), ts)
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO _edges_raw_content VALUES (?,?)",
+        (chunk_id, h)
+    )
+
+
+def _normalize_tool_result(content) -> str | None:
+    """Normalize tool_result content to string."""
+    if isinstance(content, str):
+        return content if content else None
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get('type') == 'text':
+                parts.append(item.get('text', ''))
+            elif isinstance(item, str):
+                parts.append(item)
+        return '\n'.join(parts) if parts else None
+    return None
 
 
 def insert_chunk_atom(conn: sqlite3.Connection, chunk: dict):
@@ -321,6 +343,9 @@ def sync_session_messages(session_id: str, conn: sqlite3.Connection) -> int:
         return 0
 
     new_chunks = []
+    tool_content_items = []  # (chunk_id, raw, tool_name, ts)
+    tool_use_id_map = {}     # tool_use.id -> tool_name
+
     for line_num, line in enumerate(lines, 1):
         if line_num <= last_num:
             continue
@@ -338,20 +363,7 @@ def sync_session_messages(session_id: str, conn: sqlite3.Connection) -> int:
         if not message or not uuid:
             continue
 
-        content = message.get('content', [])
-        text_parts = []
-
-        if isinstance(content, str):
-            text_parts.append(content)
-        elif isinstance(content, list):
-            for item in content:
-                if isinstance(item, dict) and item.get('type') == 'text':
-                    text_parts.append(item.get('text', ''))
-
-        text_content = '\n'.join(text_parts) if text_parts else None
-        if not text_content:
-            continue
-
+        # Parse timestamp
         ts_int = int(time.time())
         timestamp = entry.get('timestamp')
         if timestamp:
@@ -361,11 +373,45 @@ def sync_session_messages(session_id: str, conn: sqlite3.Connection) -> int:
             except Exception:
                 pass
 
+        content = message.get('content', [])
+        text_parts = []
+        chunk_id = f"{session_id}_{line_num}"
+
+        if isinstance(content, str):
+            text_parts.append(content)
+        elif isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get('type')
+
+                if item_type == 'text':
+                    text_parts.append(item.get('text', ''))
+
+                elif item_type == 'tool_use':
+                    tool_name = item.get('name', 'unknown')
+                    tool_use_id_map[item.get('id', '')] = tool_name
+                    raw = json.dumps(item.get('input', {}))
+                    if len(raw) > 10:
+                        tool_content_items.append((chunk_id, raw, tool_name, ts_int))
+
+                elif item_type == 'tool_result':
+                    tool_use_id = item.get('tool_use_id', '')
+                    tool_name = tool_use_id_map.get(tool_use_id, 'unknown')
+                    raw = _normalize_tool_result(item.get('content'))
+                    if raw and len(raw) > 10:
+                        tool_content_items.append((chunk_id, raw, tool_name, ts_int))
+
+        text_content = '\n'.join(text_parts) if text_parts else None
+        if not text_content:
+            # Even without text, we may have tool content — that's already collected above
+            continue
+
         chunk_type = 'user_prompt' if entry_type == 'user' else 'assistant'
         role = 'user' if entry_type == 'user' else 'assistant'
 
         new_chunks.append({
-            'id': f"{session_id}_{line_num}",
+            'id': chunk_id,
             'doc_id': session_id,
             'chunk_number': line_num,
             'type': chunk_type,
@@ -380,23 +426,29 @@ def sync_session_messages(session_id: str, conn: sqlite3.Connection) -> int:
             'parent_uuid': entry.get('parentUuid'),
         })
 
-    if not new_chunks:
-        return 0
-
-    # Embed and insert
-    embedder = get_embedder()
-    texts = [c['content'] for c in new_chunks]
-    embeddings = encode(texts)
-
+    # Embed and insert text chunks
     inserted = 0
-    for chunk, emb in zip(new_chunks, embeddings):
+    if new_chunks:
+        embedder = get_embedder()
+        texts = [c['content'] for c in new_chunks]
+        embeddings = encode(texts)
+
+        for chunk, emb in zip(new_chunks, embeddings):
+            try:
+                chunk['embedding'] = serialize_f32(emb)
+                insert_chunk_atom(conn, chunk)
+                update_source_stats(conn, chunk['doc_id'], chunk)
+                inserted += 1
+            except Exception as e:
+                print(f"[worker] Chunk insert error: {e}", file=sys.stderr)
+
+    # Store tool content (tool_use inputs + tool_result outputs)
+    _ensure_content_tables(conn)
+    for chunk_id, raw, tool_name, ts in tool_content_items:
         try:
-            chunk['embedding'] = serialize_f32(emb)
-            insert_chunk_atom(conn, chunk)
-            update_source_stats(conn, chunk['doc_id'], chunk)
-            inserted += 1
+            _store_content_raw(conn, chunk_id, raw, tool_name, ts)
         except Exception as e:
-            print(f"[worker] Chunk insert error: {e}", file=sys.stderr)
+            print(f"[worker] Tool content store error: {e}", file=sys.stderr)
 
     return inserted
 

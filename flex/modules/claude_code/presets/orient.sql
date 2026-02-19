@@ -56,6 +56,48 @@ SELECT name, description, params FROM _presets ORDER BY name;
 -- @query: retrieval
 SELECT key, value FROM _meta WHERE key LIKE 'retrieval:%' ORDER BY key;
 
+-- @query: coverage
+-- Identity edges are PARTIAL BY DESIGN. <100% is normal.
+-- Only count applicable chunks (e.g. file_uuid only applies to file tools).
+SELECT 'file_uuid' as field,
+    ROUND(100.0 * COUNT(DISTINCT fi.chunk_id) / MAX(COUNT(DISTINCT t.chunk_id), 1), 1) || '%' as coverage,
+    'File tools only. Excludes /tmp/.' as note
+FROM _edges_tool_ops t
+LEFT JOIN _edges_file_identity fi ON t.chunk_id = fi.chunk_id
+WHERE t.tool_name IN ('Write','Edit','MultiEdit','Read','Glob','Grep')
+  AND t.target_file NOT LIKE '/tmp/%'
+UNION ALL
+SELECT 'repo_root',
+    ROUND(100.0 *
+      (SELECT COUNT(DISTINCT ri.chunk_id) FROM _edges_repo_identity ri) /
+      MAX((SELECT COUNT(DISTINCT t2.chunk_id) FROM _edges_tool_ops t2
+       WHERE t2.target_file IS NOT NULL AND t2.target_file NOT LIKE '/tmp/%'), 1), 1) || '%',
+    'Files outside git repos have no repo_root.'
+UNION ALL
+SELECT 'content_hash',
+    ROUND(100.0 *
+      (SELECT COUNT(DISTINCT ci.chunk_id) FROM _edges_content_identity ci) /
+      MAX((SELECT COUNT(DISTINCT t3.chunk_id) FROM _edges_tool_ops t3
+       WHERE t3.tool_name IN ('Write','Edit','MultiEdit') AND t3.target_file IS NOT NULL), 1), 1) || '%',
+    'Mutations only. File must exist at capture time.'
+UNION ALL
+SELECT 'url_uuid',
+    ROUND(100.0 *
+      (SELECT COUNT(DISTINCT ui.chunk_id) FROM _edges_url_identity ui) /
+      MAX((SELECT COUNT(DISTINCT t4.chunk_id) FROM _edges_tool_ops t4
+       WHERE t4.tool_name = 'WebFetch'), 1), 1) || '%',
+    'WebFetch only.'
+UNION ALL
+SELECT 'parent_uuid',
+    ROUND(100.0 *
+      (SELECT COUNT(*) FROM _types_message WHERE parent_uuid IS NOT NULL) /
+      MAX((SELECT COUNT(*) FROM _types_message), 1), 1) || '%',
+    'From JSONL files. Missing = JSONL deleted or pre-deploy.'
+UNION ALL
+SELECT 'raw_content',
+    (SELECT COUNT(*) FROM _raw_content) || ' rows',
+    'Tool inputs/outputs. JOIN via _edges_raw_content.';
+
 -- @query: sample
 SELECT substr(content, 1, 150) as preview FROM _raw_chunks
 WHERE length(content) > 100 ORDER BY RANDOM() LIMIT 3;
