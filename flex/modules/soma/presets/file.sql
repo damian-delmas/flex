@@ -2,6 +2,7 @@
 -- @description: Find sessions that touched a file (SOMA-first, unified across renames)
 -- @params: path (required), limit (default: 30)
 
+-- Resolve file_uuid from any matching path, fan out to ALL paths
 SELECT
     substr(es.source_id, 1, 8) as session,
     t.tool_name,

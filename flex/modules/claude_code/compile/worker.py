@@ -24,10 +24,19 @@ from datetime import datetime
 
 from flex.registry import resolve_cell, FLEX_HOME
 from flex.onnx.embed import get_model, encode
-from flex.modules.claude_code.compile.enrich import enrich_event
 from flex.modules.claude_code.compile.soft_detect import detect_file_ops
 from flex.modules.claude_code.compile.skip import should_skip_event
 from flex.modules.docpac.compile.worker import process_queue as docpac_process_queue
+
+# SOMA identity module — optional, graceful degradation when absent
+try:
+    from flex.modules.soma.compile import enrich as soma_enrich
+    from flex.modules.soma.compile import insert_edges as soma_insert_edges
+    from flex.modules.soma.compile import ensure_tables as soma_ensure_tables
+except ImportError:
+    soma_enrich = None
+    soma_insert_edges = None
+    soma_ensure_tables = None
 
 QUEUE_DB = FLEX_HOME / "queue.db"
 CLAUDE_PROJECTS = Path.home() / ".claude/projects"
@@ -56,23 +65,6 @@ def find_jsonl(session_id: str) -> Path | None:
     for jsonl in CLAUDE_PROJECTS.rglob(f"{session_id}.jsonl"):
         return jsonl
     return None
-
-
-def enrich_chunk(event: dict) -> dict:
-    """Enrich event using compile/enrich.py — returns identity fields."""
-    try:
-        enriched = enrich_event(event, allow_slow=False)
-        return {
-            'file_uuid': enriched.get('file_uuid'),
-            'repo_root': enriched.get('repo_root'),
-            'blob_hash': enriched.get('blob_hash'),
-            'content_hash': enriched.get('content_hash'),
-            'is_tracked': enriched.get('is_tracked'),
-            'url_uuid': enriched.get('url_uuid'),
-        }
-    except Exception as e:
-        print(f"[worker] Enrichment error: {e}", file=sys.stderr)
-        return {}
 
 
 from flex.utils.git import git_root_from_path as _git_root_from_path
@@ -191,33 +183,9 @@ def insert_chunk_atom(conn: sqlite3.Connection, chunk: dict):
         """, (chunk_id, chunk['tool_name'], chunk.get('target_file'),
               chunk.get('success'), chunk.get('cwd'), chunk.get('git_branch')))
 
-    # _edges_file_identity (if file_uuid present)
-    if chunk.get('file_uuid'):
-        cur.execute("""
-            INSERT OR IGNORE INTO _edges_file_identity (chunk_id, file_uuid)
-            VALUES (?, ?)
-        """, (chunk_id, chunk['file_uuid']))
-
-    # _edges_repo_identity (if repo_root present)
-    if chunk.get('repo_root'):
-        cur.execute("""
-            INSERT OR IGNORE INTO _edges_repo_identity (chunk_id, repo_root, is_tracked)
-            VALUES (?, ?, ?)
-        """, (chunk_id, chunk['repo_root'], chunk.get('is_tracked')))
-
-    # _edges_content_identity (if content_hash present)
-    if chunk.get('content_hash'):
-        cur.execute("""
-            INSERT OR IGNORE INTO _edges_content_identity (chunk_id, content_hash, blob_hash)
-            VALUES (?, ?, ?)
-        """, (chunk_id, chunk['content_hash'], chunk.get('blob_hash')))
-
-    # _edges_url_identity (if url_uuid present)
-    if chunk.get('url_uuid'):
-        cur.execute("""
-            INSERT OR IGNORE INTO _edges_url_identity (chunk_id, url_uuid)
-            VALUES (?, ?)
-        """, (chunk_id, chunk['url_uuid']))
+    # SOMA identity edges (file_uuid, repo_root, content_hash, url_uuid)
+    if soma_insert_edges:
+        soma_insert_edges(conn, chunk)
 
     # _edges_delegations (Task spawns)
     if chunk.get('spawned_agent'):
@@ -281,15 +249,6 @@ def process_event(event: dict, conn: sqlite3.Connection) -> dict | None:
         content_parts.append(event['url'])
     content = ' '.join(content_parts)
 
-    enrichment = enrich_chunk({
-        'tool': tool,
-        'file': file_path,
-        'cwd': cwd,
-        'url': event.get('url'),
-        'session': session_id,
-        'msg': msg,
-    })
-
     spawned_agent = event.get('spawned_agent') if tool == 'Task' else None
 
     chunk = {
@@ -305,14 +264,29 @@ def process_event(event: dict, conn: sqlite3.Connection) -> dict | None:
         'role': 'assistant',
         'cwd': cwd,
         'git_branch': event.get('git_branch'),
-        'file_uuid': enrichment.get('file_uuid'),
-        'repo_root': enrichment.get('repo_root'),
-        'blob_hash': enrichment.get('blob_hash'),
-        'content_hash': enrichment.get('content_hash'),
-        'is_tracked': enrichment.get('is_tracked'),
-        'url_uuid': enrichment.get('url_uuid'),
         'spawned_agent': spawned_agent,
     }
+
+    # SOMA enrichment — stamps identity fields onto chunk dict
+    if soma_enrich:
+        try:
+            enrichment = soma_enrich({
+                'tool': tool,
+                'file': file_path,
+                'cwd': cwd,
+                'url': event.get('url'),
+                'web_content': event.get('web_content'),
+                'web_status': event.get('web_status'),
+                'session': session_id,
+                'msg': msg,
+            })
+            # Copy identity fields into chunk
+            for key in ('file_uuid', 'repo_root', 'blob_hash', 'old_blob_hash',
+                        'content_hash', 'is_tracked', 'url_uuid'):
+                if enrichment.get(key) is not None:
+                    chunk[key] = enrichment[key]
+        except Exception as e:
+            print(f"[worker] SOMA enrichment error: {e}", file=sys.stderr)
 
     # Store raw content (old_string, new_string, write_content, web_content)
     _store_raw_content(conn, chunk_id, event, tool, ts)
@@ -403,6 +377,7 @@ def sync_session_messages(session_id: str, conn: sqlite3.Connection) -> int:
             'role': role,
             'cwd': entry.get('cwd'),
             'git_branch': entry.get('gitBranch'),
+            'parent_uuid': entry.get('parentUuid'),
         })
 
     if not new_chunks:
@@ -541,6 +516,10 @@ def daemon_loop(interval=2):
 
     # Ensure content store tables exist
     _ensure_content_tables(conn)
+
+    # Ensure SOMA identity tables exist
+    if soma_ensure_tables:
+        soma_ensure_tables(conn)
 
     # Startup backfill for sessions missed during outage
     startup_backfill(conn)

@@ -128,39 +128,13 @@ CREATE TABLE _types_message (
     chunk_number INTEGER
 );
 
--- SOMA identity tables (1:N, NO PK on chunk_id — NOT in view)
-CREATE TABLE _edges_file_identity (
-    chunk_id TEXT NOT NULL,
-    file_uuid TEXT NOT NULL
-);
-CREATE INDEX idx_efi_chunk ON _edges_file_identity(chunk_id);
-
-CREATE TABLE _edges_repo_identity (
-    chunk_id TEXT NOT NULL,
-    repo_root TEXT NOT NULL,
-    is_tracked INTEGER
-);
-CREATE INDEX idx_eri_chunk ON _edges_repo_identity(chunk_id);
-
-CREATE TABLE _edges_content_identity (
-    chunk_id TEXT NOT NULL,
-    content_hash TEXT NOT NULL,
-    blob_hash TEXT
-);
-CREATE INDEX idx_eci_chunk ON _edges_content_identity(chunk_id);
-
-CREATE TABLE _edges_url_identity (
-    chunk_id TEXT NOT NULL,
-    url_uuid TEXT NOT NULL
-);
-CREATE INDEX idx_eui_chunk ON _edges_url_identity(chunk_id);
-
 -- Edge tables (renamed from flat schema)
 CREATE TABLE _edges_delegations (
     id INTEGER PRIMARY KEY,
     chunk_id TEXT,
     child_doc_id TEXT,
-    agent_type TEXT
+    agent_type TEXT,
+    created_at INTEGER
 );
 
 CREATE TABLE _edges_soft_ops (
@@ -181,6 +155,41 @@ CREATE TABLE _edges_git_state (
     head_commit TEXT,
     branch TEXT
 );
+"""
+
+# SOMA identity edge tables (1:N, NO PK on chunk_id — NOT in view)
+SOMA_MODULE_DDL = """
+CREATE TABLE IF NOT EXISTS _edges_file_identity (
+    chunk_id TEXT NOT NULL,
+    file_uuid TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_efi_chunk ON _edges_file_identity(chunk_id);
+CREATE INDEX IF NOT EXISTS idx_efi_uuid ON _edges_file_identity(file_uuid);
+
+CREATE TABLE IF NOT EXISTS _edges_repo_identity (
+    chunk_id TEXT NOT NULL,
+    repo_root TEXT NOT NULL,
+    is_tracked INTEGER DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_eri_chunk ON _edges_repo_identity(chunk_id);
+CREATE INDEX IF NOT EXISTS idx_eri_root ON _edges_repo_identity(repo_root);
+
+CREATE TABLE IF NOT EXISTS _edges_content_identity (
+    chunk_id TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    blob_hash TEXT,
+    old_blob_hash TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_eci_chunk ON _edges_content_identity(chunk_id);
+CREATE INDEX IF NOT EXISTS idx_eci_hash ON _edges_content_identity(content_hash);
+CREATE INDEX IF NOT EXISTS idx_eci_blob ON _edges_content_identity(blob_hash);
+
+CREATE TABLE IF NOT EXISTS _edges_url_identity (
+    chunk_id TEXT NOT NULL,
+    url_uuid TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_eui_chunk ON _edges_url_identity(chunk_id);
+CREATE INDEX IF NOT EXISTS idx_eui_uuid ON _edges_url_identity(url_uuid);
 """
 
 
@@ -274,6 +283,7 @@ def claude_code_cell():
     conn.row_factory = sqlite3.Row
     conn.executescript(CHUNK_ATOM_DDL)
     conn.executescript(CLAUDE_CODE_MODULE_DDL)
+    conn.executescript(SOMA_MODULE_DDL)
 
     # Populate _meta with view renames
     meta = [
