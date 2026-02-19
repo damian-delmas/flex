@@ -328,11 +328,9 @@ def build_instructions() -> str:
         "  Phase 3 — SQL composition. JOINs, graph boost, GROUP BY on candidates.",
         "",
         "  SELECT v.id, v.score, m.content",
-        "  FROM vec_ops('_raw_chunks', 'authentication', 'diverse recent:7',",
-        "    'SELECT chunk_id FROM _types_message WHERE role = ''user'''",
-        "  ) v",
+        "  FROM vec_ops('_raw_chunks', 'authentication') v",
         "  JOIN messages m ON v.id = m.id",
-        "  ORDER BY v.score * (1 + m.centrality) DESC",
+        "  ORDER BY v.score DESC",
         "  LIMIT 10",
         "",
         "vec_ops('table', 'query_text', 'tokens', 'pre_filter_sql')",
@@ -378,7 +376,7 @@ def build_instructions() -> str:
         "    ORDER BY v.score * (1 + m.centrality) DESC",
         "    LIMIT 10",
         "",
-        "  Human voice only (filter to what the user actually said):",
+        "  User intent only (what the human asked/decided, not tool output):",
         "    SELECT v.id, v.score, m.content",
         "    FROM vec_ops('_raw_chunks', 'YOUR TOPIC', 'diverse',",
         "      'SELECT chunk_id FROM _types_message WHERE role = ''user''') v",
@@ -393,6 +391,13 @@ def build_instructions() -> str:
         "    ORDER BY m.centrality DESC",
         "    LIMIT 5",
         "",
+        "  Find recent implementation (exact terms + recency):",
+        "    SELECT v.id, v.score, m.content",
+        "    FROM vec_ops('_raw_chunks', 'EXACT_FUNCTION_OR_TABLE_NAME', 'recent:1') v",
+        "    JOIN messages m ON v.id = m.id",
+        "    ORDER BY v.score DESC",
+        "    LIMIT 10",
+        "",
         "  Structural (when/how much — no embeddings needed):",
         "    SELECT project, COUNT(*) as sessions",
         "    FROM sessions GROUP BY project ORDER BY sessions DESC",
@@ -401,7 +406,7 @@ def build_instructions() -> str:
         "  1. Schema first. Run @orient before writing any query.",
         "  2. SQL for 'when/how much', vec_ops for 'what about'. Don't embed-search what SQL can answer.",
         "  3. diverse for discovery, vanilla for precision. diverse spreads across subtopics. Omit it when you want actual nearest neighbors.",
-        "  4. Pre-filter for human voice: SELECT chunk_id FROM _types_message WHERE role = 'user'",
+        "  4. role='user' = intent/decisions. role='assistant' = implementation/analysis. Pre-filter by role only when you want to slice by who said something.",
         "  5. Pivot semantic → structural. vec_ops finds the neighborhood, graph columns navigate it.",
         "  6. Escalate specificity. COUNT(*) → GROUP BY → vec_ops on the interesting cluster.",
         "  7. Cross-cell triangulation. Design intent in context cells, implementation in claude_code.",
@@ -420,7 +425,7 @@ def build_instructions() -> str:
 def _build_tool_description() -> str:
     """Build tool description. Instructions carry the real context."""
     return (
-        "FlexSearch indexes the user's conversations and knowledge bases. "
+        "Flex indexes the user's conversations and knowledge bases. "
         "Each cell is a self-describing SQLite database "
         "with chunks, embeddings, and graph intelligence."
     )
