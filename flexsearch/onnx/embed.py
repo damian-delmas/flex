@@ -32,8 +32,8 @@ def _get_onnxruntime():
 def _get_tokenizer():
     global _tokenizer
     if _tokenizer is None:
-        from transformers import AutoTokenizer
-        _tokenizer = AutoTokenizer.from_pretrained(str(ONNX_DIR))
+        from tokenizers import Tokenizer
+        _tokenizer = Tokenizer.from_file(str(ONNX_DIR / "tokenizer.json"))
     return _tokenizer
 
 
@@ -84,31 +84,29 @@ class ONNXEmbedder:
             sentences = [sentences]
 
         all_embeddings = []
+        tok = self.tokenizer
+        tok.enable_truncation(max_length=256)
+        tok.enable_padding()
 
         for i in range(0, len(sentences), batch_size):
             batch = sentences[i:i + batch_size]
 
             # Tokenize
-            inputs = self.tokenizer(
-                batch,
-                return_tensors="np",
-                padding=True,
-                truncation=True,
-                max_length=256
-            )
+            encoded = tok.encode_batch(batch)
+            input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
+            attention_mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
 
             # Run ONNX inference
             outputs = self.session.run(
                 None,
                 {
-                    "input_ids": inputs["input_ids"],
-                    "attention_mask": inputs["attention_mask"]
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
                 }
             )
 
             # Mean pooling
             last_hidden = outputs[0]
-            attention_mask = inputs["attention_mask"]
             mask_expanded = np.expand_dims(attention_mask, -1).astype(np.float32)
             sum_embeddings = np.sum(last_hidden * mask_expanded, axis=1)
             sum_mask = np.sum(mask_expanded, axis=1)

@@ -1,17 +1,36 @@
 [project]
-name = "flexsearch"
+name = "getflex"
 version = "0.1.0"
+description = "SQLite knowledge engine for AI Agents"
 requires-python = ">=3.12"
 dependencies = [
     "numpy",
     "networkx",
     "scikit-learn",
+    "onnxruntime",
+    "tokenizers",
 ]
 
 [project.optional-dependencies]
-embed = ["onnxruntime", "transformers"]
 mcp = ["mcp", "starlette", "uvicorn"]
 cluster = ["hdbscan"]
+
+[project.scripts]
+flex = "flexsearch.cli:main"
+
+[tool.setuptools.package-data]
+flexsearch = [
+    "modules/claude_code/compile/hooks/*.sh",
+    "data/hooks/*.sh",
+    "data/systemd/*.tmpl",
+    "onnx/model.onnx",
+    "onnx/model.onnx.data",
+    "onnx/*.json",
+    "onnx/vocab.txt",
+]
+
+[tool.setuptools.packages.find]
+include = ["flexsearch*"]
 
 [build-system]
 requires = ["setuptools>=68.0"]

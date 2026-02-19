@@ -277,9 +277,9 @@ def execute_query(db: sqlite3.Connection, query: str) -> str:
 def build_instructions() -> str:
     """Build server instructions. The cell describes itself via @orient."""
     parts = [
-        "FlexSearch indexes the USERS conversations and knowledge bases. "
+        "Flex indexes the USERS conversations and knowledge bases. "
         "Each cell is a self-describing SQLite database with chunks, embeddings, "
-        "and graph intelligence. When the USER asks to 'flex' or 'flexsearch' their "
+        "and graph intelligence. When the USER asks to 'flex' or flex search their "
         "conversations, memories, changes, documentation or knowledge they are "
         "referring to this tool.",
         "",
@@ -451,7 +451,7 @@ def _build_tool_schema() -> dict:
 # MCP Server
 # ============================================================
 
-server = Server("flexsearch")
+server = Server("flex")
 
 
 def _log_query(cell: str, query: str, result_json: str, elapsed_ms: float):
@@ -486,7 +486,7 @@ async def handle_list_tools() -> list[types.Tool]:
     """Return the flexsearch tool with dynamic description and schema."""
     return [
         types.Tool(
-            name="flexsearch",
+            name="flex",
             description=_build_tool_description(),
             inputSchema=_build_tool_schema(),
         )
@@ -539,7 +539,7 @@ async def handle_call_tool(
     name: str, arguments: dict | None
 ) -> list[types.TextContent]:
     """Handle flexsearch tool calls. Runs DB work in executor to avoid blocking."""
-    if name != "flexsearch":
+    if name != "flex":
         return [types.TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
 
     if not arguments or "query" not in arguments:

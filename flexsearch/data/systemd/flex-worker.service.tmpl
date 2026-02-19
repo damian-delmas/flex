@@ -1,0 +1,13 @@
+[Unit]
+Description=Flex Live Capture Worker
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={{PYTHON}} -m flexsearch.modules.claude_code.compile.worker --daemon
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
