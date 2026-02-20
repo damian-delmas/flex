@@ -293,6 +293,199 @@ def cmd_search(args):
 
 
 # ============================================================
+# flex sync
+# ============================================================
+
+# Map cell_type → curated view directory (relative to repo root)
+_VIEW_DIRS = {
+    'claude-code': 'views/claude_code',
+    'claude_chat': 'views/claude_chat',    # legacy name in registry
+    'docpac': 'views/docpac',
+}
+# Also map by cell name for cells whose cell_type doesn't match
+_VIEW_DIRS_BY_NAME = {
+    'claude_code': 'views/claude_code',
+    'claude_chat': 'views/claude_chat',
+}
+
+
+def _find_view_dir(cell_name: str, cell_type: str | None) -> Path | None:
+    """Resolve the curated view directory for a cell."""
+    repo_root = PKG_ROOT.parent  # flex/ -> main/
+    # Try by cell_type first, then by name
+    rel = _VIEW_DIRS.get(cell_type) or _VIEW_DIRS_BY_NAME.get(cell_name)
+    if rel:
+        d = repo_root / rel
+        if d.exists():
+            return d
+    return None
+
+
+# Enrichment stub DDL — curated views LEFT JOIN these tables.
+# Empty stubs let views work before enrichments run.
+_ENRICHMENT_STUBS = {
+    'claude-code': [
+        """CREATE TABLE IF NOT EXISTS _enrich_source_graph (
+            source_id TEXT PRIMARY KEY, centrality REAL, is_hub INTEGER DEFAULT 0,
+            is_bridge INTEGER DEFAULT 0, community_id INTEGER)""",
+        """CREATE TABLE IF NOT EXISTS _types_source_warmup (
+            source_id TEXT PRIMARY KEY, is_warmup_only INTEGER DEFAULT 0)""",
+        """CREATE TABLE IF NOT EXISTS _enrich_session_summary (
+            source_id TEXT PRIMARY KEY, topic_summary TEXT, community_label TEXT)""",
+    ],
+}
+
+
+def cmd_sync(args):
+    """Bring all three layers (code, data, services) into parity."""
+    import sqlite3
+    import time
+
+    from flex.registry import list_cells, resolve_cell
+    from flex.views import regenerate_views, install_views
+    from flex.utils.install_presets import install_cell as install_presets_cell
+
+    cells = list_cells()
+    if not cells:
+        print("No cells registered. Run 'flex init' first.")
+        return
+
+    target = args.cell  # None = all cells
+
+    print("flex sync")
+    print()
+
+    # ---- Phase 1: Presets ----
+    print("[1/4] Presets")
+    for cell in cells:
+        name = cell['name']
+        if target and name != target:
+            continue
+        install_presets_cell(name)
+
+    # ---- Phase 1.5: Enrichment stubs ----
+    for cell in cells:
+        name = cell['name']
+        if target and name != target:
+            continue
+        cell_type = cell.get('cell_type')
+        stubs = _ENRICHMENT_STUBS.get(cell_type, [])
+        if not stubs:
+            continue
+        db_path = resolve_cell(name)
+        if not db_path or not db_path.exists():
+            continue
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=30)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            for ddl in stubs:
+                conn.execute(ddl)
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass  # best-effort
+
+    # ---- Phase 2: Curated views ----
+    print()
+    print("[2/4] Curated views")
+    for cell in cells:
+        name = cell['name']
+        if target and name != target:
+            continue
+        view_dir = _find_view_dir(name, cell.get('cell_type'))
+        if not view_dir:
+            print(f"  {name}: SKIP (no curated views)")
+            continue
+        db_path = resolve_cell(name)
+        if not db_path or not db_path.exists():
+            print(f"  {name}: SKIP (not found)")
+            continue
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=30)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            install_views(conn, view_dir)
+            # Count installed views
+            try:
+                views = [r[0] for r in conn.execute(
+                    "SELECT name FROM _views ORDER BY name"
+                ).fetchall()]
+                print(f"  {name}: {len(views)} views [{', '.join(views)}]")
+            except Exception:
+                print(f"  {name}: views installed")
+            conn.close()
+        except sqlite3.OperationalError as e:
+            print(f"  {name}: LOCKED ({e})")
+
+    # ---- Phase 3: Auto-generated views ----
+    print()
+    print("[3/4] Auto-generated views (regenerate)")
+    for cell in cells:
+        name = cell['name']
+        if target and name != target:
+            continue
+        db_path = resolve_cell(name)
+        if not db_path or not db_path.exists():
+            continue
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=30)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            regenerate_views(conn)
+            conn.commit()
+            conn.close()
+            print(f"  {name}: ok")
+        except sqlite3.OperationalError as e:
+            print(f"  {name}: LOCKED ({e})")
+
+    # ---- Phase 4: Services ----
+    print()
+    print("[4/4] Services")
+    for service in ["flex-worker", "flex-mcp"]:
+        try:
+            subprocess.run(
+                ["systemctl", "--user", "restart", service],
+                check=True, capture_output=True, timeout=10,
+            )
+            print(f"  {service}: restarted")
+        except subprocess.CalledProcessError as e:
+            print(f"  {service}: FAILED ({e.stderr.decode().strip()})")
+        except FileNotFoundError:
+            print(f"  {service}: SKIP (systemctl not found)")
+
+    # ---- Optional: Full enrichment rebuild ----
+    if args.full:
+        print()
+        print("[5/4] Enrichment rebuild (claude_code)")
+        try:
+            t0 = time.time()
+            result = subprocess.run(
+                [sys.executable, "-m", "flex.modules.claude_code.manage.rebuild_all"],
+                capture_output=True, text=True, timeout=600,
+                cwd=str(PKG_ROOT.parent),
+            )
+            elapsed = time.time() - t0
+            if result.returncode == 0:
+                # Print last few lines of output
+                lines = result.stdout.strip().splitlines()
+                for line in lines[-10:]:
+                    print(f"  {line}")
+                print(f"  done in {elapsed:.1f}s")
+            else:
+                print(f"  FAILED (exit {result.returncode})")
+                for line in result.stderr.strip().splitlines()[-5:]:
+                    print(f"  {line}")
+        except subprocess.TimeoutExpired:
+            print("  TIMEOUT (>600s)")
+        except Exception as e:
+            print(f"  ERROR: {e}")
+
+    print()
+    print("Sync complete.")
+
+
+# ============================================================
 # Main
 # ============================================================
 
@@ -312,11 +505,18 @@ def main():
     search_p.add_argument("--cell", default="claude_code", help="Cell to query (default: claude_code)")
     search_p.add_argument("--json", action="store_true", help="Output raw JSON")
 
+    # flex sync
+    sync_p = sub.add_parser("sync", help="Bring code, data, and services into parity")
+    sync_p.add_argument("--cell", default=None, help="Sync specific cell only (default: all)")
+    sync_p.add_argument("--full", action="store_true", help="Also rebuild enrichments (~2min)")
+
     args = parser.parse_args()
     if args.command == "init":
         cmd_init(args)
     elif args.command == "search":
         cmd_search(args)
+    elif args.command == "sync":
+        cmd_sync(args)
     else:
         parser.print_help()
 

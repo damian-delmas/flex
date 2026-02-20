@@ -22,7 +22,10 @@ GENERAL_DIR = PRESET_ROOT / "general"
 # Module-specific preset directories (keyed by cell_type from registry)
 MODULE_ROOT = Path(__file__).resolve().parent.parent / "modules"
 MODULE_PRESETS = {
-    'claude-code': [MODULE_ROOT / "claude_code" / "presets"],
+    'claude-code': [
+        MODULE_ROOT / "claude_code" / "presets",
+        MODULE_ROOT / "soma" / "presets",
+    ],
 }
 
 
