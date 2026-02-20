@@ -17,7 +17,7 @@ SELECT
     t.target_file,
     t.success,
     t.cwd,
-    tp.role,
+    tp.type,
     d.child_doc_id AS child_session_id,
     d.agent_type,
     g.centrality,

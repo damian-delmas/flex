@@ -24,7 +24,7 @@ Hub/bridge boost moved to SQL: ORDER BY v.score * (1 + m.centrality)
 SQL usage:
     vec_ops('_raw_chunks', 'auth')                    -- raw cosine
     vec_ops('_raw_chunks', 'auth', 'recent:7 diverse unlike:jwt')
-    vec_ops('_raw_chunks', 'auth', 'diverse', 'SELECT chunk_id FROM _types_message WHERE role = ''user''')
+    vec_ops('_raw_chunks', 'auth', 'diverse', 'SELECT chunk_id FROM _types_message WHERE type = ''user_prompt''')
 
 Performance:
     1k docs:   0.1ms
