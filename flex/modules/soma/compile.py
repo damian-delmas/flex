@@ -178,8 +178,8 @@ def _get_git_info(file_path: str, cwd: str = "", tool: str = "") -> dict:
 
             result["is_tracked"] = _is_git_tracked(file_path, repo)
 
-            # Old blob for Edit/Write/MultiEdit (only if tracked)
-            if tool in ("Edit", "Write", "MultiEdit") and result["is_tracked"]:
+            # Blob at HEAD for file-touching tools (only if tracked)
+            if tool in ("Read", "Edit", "Write", "MultiEdit", "Glob", "Grep") and result["is_tracked"]:
                 rel_path = file_path.replace(repo + "/", "")
                 old_result = subprocess.run(
                     ["git", "-C", repo, "rev-parse", f"HEAD:{rel_path}"],
@@ -292,8 +292,8 @@ def enrich(chunk: dict) -> dict:
         except Exception as e:
             print(f"[soma] url_identity failed for {url}: {e}", file=sys.stderr)
 
-    # Content hash for Write/Edit/MultiEdit
-    if file_path and tool in ("Write", "Edit", "MultiEdit"):
+    # Content hash for file-mutating tools
+    if file_path and tool in ("Write", "Edit", "MultiEdit", "Read"):
         content_hash = _get_content_hash(
             file_path,
             session=chunk.get("session", ""),

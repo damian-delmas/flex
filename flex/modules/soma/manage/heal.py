@@ -277,5 +277,14 @@ def main():
     conn.close()
 
 
+def heal(conn):
+    """Run all heal passes on an open connection. For use by the worker daemon."""
+    t0 = time.time()
+    print("[heal] SOMA identity heal...", file=sys.stderr)
+    for fn in (_pass_file, _pass_content, _pass_url):
+        fn(conn, dry_run=False, limit=0)
+    print(f"[heal] Done in {time.time() - t0:.1f}s", file=sys.stderr)
+
+
 if __name__ == "__main__":
     main()

@@ -126,7 +126,9 @@ CREATE TABLE _types_message (
     type TEXT,
     role TEXT,
     chunk_number INTEGER,
-    parent_uuid TEXT
+    parent_uuid TEXT,
+    is_sidechain INTEGER,
+    entry_uuid TEXT
 );
 
 -- Edge tables (renamed from flat schema)
