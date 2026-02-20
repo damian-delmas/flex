@@ -472,6 +472,149 @@ class TestProcessEventDeleted:
         assert not hasattr(w, 'process_event')
 
 
+class TestOldBlobHashFromSnapshot:
+    """file-history-snapshot backup files produce old_blob_hash on SOMA edges."""
+
+    def test_snapshot_populates_old_blob_hash(self, tmp_path, monkeypatch):
+        import hashlib
+        conn = _make_cell(tmp_path)
+        session_id = "test-session-snap"
+        target_file = "/home/test/projects/myapp/main.py"
+        assistant_uuid = "assist-uuid-snap"
+        backup_name = "abc123@v1"
+
+        # Create file-history backup on disk
+        fh_dir = tmp_path / ".claude" / "file-history" / session_id
+        fh_dir.mkdir(parents=True)
+        backup_content = b"def hello():\n    return 'world'\n"
+        (fh_dir / backup_name).write_bytes(backup_content)
+
+        # Expected git blob hash
+        header = f"blob {len(backup_content)}\0".encode()
+        expected_hash = hashlib.sha1(header + backup_content).hexdigest()
+
+        # Build JSONL with snapshot → assistant Edit
+        entries = [
+            _user_entry("edit the file"),
+            {
+                "type": "file-history-snapshot",
+                "messageId": assistant_uuid,
+                "timestamp": "2026-02-19T15:02:00Z",
+                "snapshot": {
+                    "messageId": assistant_uuid,
+                    "trackedFileBackups": {
+                        target_file: {
+                            "backupFileName": backup_name,
+                            "version": 1,
+                            "backupTime": "2026-02-19T15:02:00Z",
+                        }
+                    },
+                    "timestamp": "2026-02-19T15:02:00Z",
+                },
+            },
+            _assistant_tool_entry(
+                [("Edit", {"file_path": target_file, "old_string": "x", "new_string": "y"})],
+                uuid=assistant_uuid,
+            ),
+        ]
+        jsonl_path = _write_jsonl(tmp_path, session_id, entries)
+
+        import flex.modules.claude_code.compile.worker as w
+        from pathlib import Path
+        monkeypatch.setattr(w, 'find_jsonl', lambda sid: jsonl_path if sid == session_id else None)
+        monkeypatch.setattr(w, 'get_embedder', lambda: None)
+        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * 384 for _ in texts])
+        monkeypatch.setattr(w, 'serialize_f32', lambda v: _make_embedding())
+        monkeypatch.setattr(Path, 'home', classmethod(lambda cls: tmp_path))
+
+        # Mock SOMA: capture enrichment dicts to verify old_blob_hash
+        captured = []
+
+        def mock_enrich(chunk):
+            return chunk  # pass through
+
+        def mock_insert(conn, chunk):
+            captured.append(dict(chunk))
+
+        monkeypatch.setattr(w, 'soma_enrich', mock_enrich)
+        monkeypatch.setattr(w, 'soma_insert_edges', mock_insert)
+
+        w.sync_session_messages(session_id, conn)
+
+        # Verify old_blob_hash was set from backup file
+        edits = [c for c in captured if c.get('old_blob_hash')]
+        assert len(edits) >= 1
+        assert edits[0]['old_blob_hash'] == expected_hash
+
+    def test_snapshot_update_merges(self, tmp_path, monkeypatch):
+        """isSnapshotUpdate=True snapshots merge file hashes."""
+        conn = _make_cell(tmp_path)
+        session_id = "test-session-merge"
+        assistant_uuid = "assist-uuid-merge"
+        file_a = "/home/test/a.py"
+        file_b = "/home/test/b.py"
+
+        fh_dir = tmp_path / ".claude" / "file-history" / session_id
+        fh_dir.mkdir(parents=True)
+        (fh_dir / "aaa@v1").write_bytes(b"content a")
+        (fh_dir / "bbb@v1").write_bytes(b"content b")
+
+        entries = [
+            _user_entry("edit both"),
+            {
+                "type": "file-history-snapshot",
+                "messageId": assistant_uuid,
+                "timestamp": "2026-02-19T15:02:00Z",
+                "snapshot": {
+                    "messageId": assistant_uuid,
+                    "trackedFileBackups": {
+                        file_a: {"backupFileName": "aaa@v1", "version": 1, "backupTime": "..."},
+                    },
+                    "timestamp": "2026-02-19T15:02:00Z",
+                },
+            },
+            {
+                "type": "file-history-snapshot",
+                "messageId": assistant_uuid,
+                "isSnapshotUpdate": True,
+                "timestamp": "2026-02-19T15:02:01Z",
+                "snapshot": {
+                    "messageId": assistant_uuid,
+                    "trackedFileBackups": {
+                        file_b: {"backupFileName": "bbb@v1", "version": 1, "backupTime": "..."},
+                    },
+                    "timestamp": "2026-02-19T15:02:01Z",
+                },
+            },
+            _assistant_tool_entry(
+                [
+                    ("Edit", {"file_path": file_a, "old_string": "x", "new_string": "y"}),
+                    ("Edit", {"file_path": file_b, "old_string": "x", "new_string": "y"}),
+                ],
+                uuid=assistant_uuid,
+            ),
+        ]
+        jsonl_path = _write_jsonl(tmp_path, session_id, entries)
+
+        import flex.modules.claude_code.compile.worker as w
+        from pathlib import Path
+        monkeypatch.setattr(w, 'find_jsonl', lambda sid: jsonl_path if sid == session_id else None)
+        monkeypatch.setattr(w, 'get_embedder', lambda: None)
+        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * 384 for _ in texts])
+        monkeypatch.setattr(w, 'serialize_f32', lambda v: _make_embedding())
+        monkeypatch.setattr(Path, 'home', classmethod(lambda cls: tmp_path))
+
+        captured = []
+        monkeypatch.setattr(w, 'soma_enrich', lambda chunk: chunk)
+        monkeypatch.setattr(w, 'soma_insert_edges', lambda conn, chunk: captured.append(dict(chunk)))
+
+        w.sync_session_messages(session_id, conn)
+
+        # Both files should have old_blob_hash
+        hashes = [c for c in captured if c.get('old_blob_hash')]
+        assert len(hashes) >= 2
+
+
 class TestProgressAndSystemSkipped:
     """progress and system entries produce no chunks."""
 

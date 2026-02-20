@@ -294,3 +294,160 @@ class TestIdentityContract:
             "SELECT COUNT(*) FROM _edges_file_identity WHERE chunk_id = 'sess-001_0'"
         ).fetchone()[0]
         assert count == 2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test: old_blob_hash heal pass
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestOldBlobHashHeal:
+    """_pass_old_blob_hash backfills from file-history backups."""
+
+    def test_git_blob_hash(self):
+        """_git_blob_hash matches git hash-object output."""
+        from flex.modules.soma.manage.heal import _git_blob_hash
+        content = b"hello world\n"
+        # Known git blob hash for "hello world\n" (12 bytes)
+        # echo "hello world" | git hash-object --stdin
+        expected = "3b18e512dba79e4c8300dd08aeb37f8e728b8dad"
+        assert _git_blob_hash(content) == expected
+
+    def test_build_snapshot_map(self, tmp_path):
+        """_build_snapshot_map extracts file hashes from JSONL + backup files."""
+        import json
+        from flex.modules.soma.manage.heal import _build_snapshot_map
+
+        session_id = "heal-test-001"
+        assistant_uuid = "assist-heal-001"
+        target_file = "/home/test/main.py"
+        backup_name = "hash123@v1"
+
+        # Create file-history backup
+        fh_dir = tmp_path / ".claude" / "file-history" / session_id
+        fh_dir.mkdir(parents=True)
+        backup_content = b"original content\n"
+        (fh_dir / backup_name).write_bytes(backup_content)
+
+        # Create JSONL
+        entries = [
+            {"type": "user", "uuid": "u1", "timestamp": "2026-02-19T15:00:00Z",
+             "message": {"role": "user", "content": "edit it"}},
+            {
+                "type": "file-history-snapshot",
+                "messageId": assistant_uuid,
+                "timestamp": "2026-02-19T15:01:00Z",
+                "snapshot": {
+                    "messageId": assistant_uuid,
+                    "trackedFileBackups": {
+                        target_file: {
+                            "backupFileName": backup_name,
+                            "version": 1,
+                            "backupTime": "2026-02-19T15:01:00Z",
+                        }
+                    },
+                    "timestamp": "2026-02-19T15:01:00Z",
+                },
+            },
+            {"type": "assistant", "uuid": assistant_uuid,
+             "timestamp": "2026-02-19T15:01:01Z",
+             "message": {"role": "assistant", "content": [
+                 {"type": "tool_use", "id": "t1", "name": "Edit",
+                  "input": {"file_path": target_file, "old_string": "x", "new_string": "y"}}
+             ]}},
+        ]
+        jsonl_path = tmp_path / f"{session_id}.jsonl"
+        with open(jsonl_path, 'w') as f:
+            for e in entries:
+                f.write(json.dumps(e) + '\n')
+
+        # Monkeypatch Path.home for file-history lookup
+        from pathlib import Path
+        original_home = Path.home
+        try:
+            Path.home = classmethod(lambda cls: tmp_path)
+            result = _build_snapshot_map(jsonl_path, session_id)
+        finally:
+            Path.home = original_home
+
+        # Line 3 (1-indexed) is the assistant entry
+        assert 3 in result
+        assert target_file in result[3]
+        # Verify it's a valid sha1 hex
+        assert len(result[3][target_file]) == 40
+
+    def test_pass_updates_existing_row(self, tmp_path, monkeypatch):
+        """_pass_old_blob_hash UPDATEs rows that already have content_hash."""
+        import json
+        from tests.conftest import CHUNK_ATOM_DDL, CLAUDE_CODE_MODULE_DDL, SOMA_MODULE_DDL
+        from flex.modules.soma.manage.heal import _pass_old_blob_hash, _git_blob_hash
+
+        conn = sqlite3.connect(':memory:')
+        conn.executescript(CHUNK_ATOM_DDL)
+        conn.executescript(CLAUDE_CODE_MODULE_DDL)
+        conn.executescript(SOMA_MODULE_DDL)
+
+        session_id = "heal-sess-001"
+        target_file = "/home/user/project/main.py"
+        assistant_uuid = "assist-heal-upd"
+        # chunk_id = {session}_{line_num} — line 2 is the assistant entry
+        chunk_id = f"{session_id}_2"
+
+        # Set up cell data
+        conn.execute("INSERT INTO _raw_sources (source_id, title) VALUES (?, 'test')", (session_id,))
+        conn.execute("INSERT INTO _raw_chunks (id, content, timestamp) VALUES (?, 'edit main.py', 1707000000)", (chunk_id,))
+        conn.execute("INSERT INTO _edges_source (chunk_id, source_id, position) VALUES (?, ?, 0)", (chunk_id, session_id))
+        conn.execute("INSERT INTO _edges_tool_ops (chunk_id, tool_name, target_file) VALUES (?, 'Edit', ?)", (chunk_id, target_file))
+        conn.execute(
+            "INSERT INTO _edges_content_identity (chunk_id, content_hash, blob_hash, old_blob_hash) VALUES (?, 'hash123', NULL, NULL)",
+            (chunk_id,)
+        )
+        conn.commit()
+
+        # Create backup file
+        fh_dir = tmp_path / ".claude" / "file-history" / session_id
+        fh_dir.mkdir(parents=True)
+        backup_content = b"original main.py\n"
+        (fh_dir / "main@v1").write_bytes(backup_content)
+        expected_hash = _git_blob_hash(backup_content)
+
+        # Create JSONL: line 1 = snapshot, line 2 = assistant
+        entries = [
+            {
+                "type": "file-history-snapshot",
+                "messageId": assistant_uuid,
+                "snapshot": {
+                    "messageId": assistant_uuid,
+                    "trackedFileBackups": {
+                        target_file: {"backupFileName": "main@v1", "version": 1, "backupTime": "..."},
+                    },
+                    "timestamp": "2026-02-19T15:01:00Z",
+                },
+            },
+            {"type": "assistant", "uuid": assistant_uuid,
+             "timestamp": "2026-02-19T15:01:01Z",
+             "message": {"role": "assistant", "content": [
+                 {"type": "tool_use", "id": "t1", "name": "Edit",
+                  "input": {"file_path": target_file}}
+             ]}},
+        ]
+        jsonl_path = tmp_path / f"{session_id}.jsonl"
+        with open(jsonl_path, 'w') as f:
+            for e in entries:
+                f.write(json.dumps(e) + '\n')
+
+        from pathlib import Path
+        monkeypatch.setattr(Path, 'home', classmethod(lambda cls: tmp_path))
+        monkeypatch.setattr(
+            'flex.modules.claude_code.compile.worker.find_jsonl',
+            lambda sid: jsonl_path if sid == session_id else None
+        )
+
+        _pass_old_blob_hash(conn)
+
+        row = conn.execute(
+            "SELECT old_blob_hash FROM _edges_content_identity WHERE chunk_id = ?",
+            (chunk_id,)
+        ).fetchone()
+        assert row is not None
+        assert row[0] == expected_hash
+        conn.close()

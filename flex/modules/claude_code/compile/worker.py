@@ -387,6 +387,7 @@ def sync_session_messages(session_id: str, conn: sqlite3.Connection) -> int:
     delegation_items = []     # (chunk_id, spawned_agent, ts)
     soft_ops_items = []       # (chunk_id, SoftFileOp)
     tool_use_id_map = {}      # tool_use.id -> tool_name
+    snapshot_hashes = {}      # messageId -> {filepath: git_blob_hash}
 
     _ensure_content_tables(conn)
 
@@ -411,12 +412,32 @@ def sync_session_messages(session_id: str, conn: sqlite3.Connection) -> int:
             except Exception:
                 pass
 
-        # --- File history snapshots → raw_content only, no chunk ---
+        # --- File history snapshots → cache old_blob_hash + raw_content ---
         if entry_type == 'file-history-snapshot':
             snapshot = entry.get('snapshot', {})
+            msg_id = entry.get('messageId') or (snapshot.get('messageId', '') if isinstance(snapshot, dict) else '')
+            backups = snapshot.get('trackedFileBackups', {}) if isinstance(snapshot, dict) else {}
+            if msg_id and backups:
+                file_hashes = {}
+                for filepath, info in backups.items():
+                    if not isinstance(info, dict):
+                        continue
+                    backup_name = info.get('backupFileName', '')
+                    if not backup_name:
+                        continue
+                    backup_path = Path.home() / '.claude' / 'file-history' / session_id / backup_name
+                    if backup_path.exists():
+                        try:
+                            content = backup_path.read_bytes()
+                            header = f"blob {len(content)}\0".encode()
+                            file_hashes[filepath] = hashlib.sha1(header + content).hexdigest()
+                        except Exception:
+                            pass
+                if file_hashes:
+                    snapshot_hashes.setdefault(msg_id, {}).update(file_hashes)
+            # Still store snapshot JSON in _raw_content for provenance
             if snapshot and isinstance(snapshot, dict):
-                snapshot_json = json.dumps(snapshot)
-                _store_content_raw(conn, chunk_id, snapshot_json, '_file_snapshot', ts_int)
+                _store_content_raw(conn, chunk_id, json.dumps(snapshot), '_file_snapshot', ts_int)
             continue
 
         # --- progress / system → skip ---
@@ -486,6 +507,11 @@ def sync_session_messages(session_id: str, conn: sqlite3.Connection) -> int:
                                 'session': session_id,
                                 'msg': line_num,
                             })
+                            # File-history backup hash overrides git rev-parse
+                            entry_uuid = uuid or ''
+                            if entry_uuid in snapshot_hashes and target_file and \
+                                    target_file in snapshot_hashes[entry_uuid]:
+                                enrichment['old_blob_hash'] = snapshot_hashes[entry_uuid][target_file]
                             if any(enrichment.get(k) for k in
                                    ('file_uuid', 'repo_root', 'blob_hash',
                                     'old_blob_hash', 'content_hash', 'url_uuid')):
