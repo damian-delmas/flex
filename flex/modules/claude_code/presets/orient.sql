@@ -35,8 +35,22 @@ WHERE m.type = 'view'
 GROUP BY m.name
 ORDER BY m.name;
 
+-- @query: hints
+-- Key patterns for querying this cell. vec_ops returns (id, score) — id maps to chunk_id.
+SELECT 'vec_ops → messages' as pattern,
+    'FROM vec_ops(''_raw_chunks'', ''your query'') v JOIN messages m ON v.id = m.id' as sql
+UNION ALL
+SELECT 'filter by session',
+    'WHERE m.session_id = ''d332a1a0-...'' OR WHERE m.session_id LIKE ''d332a1a0%'''
+UNION ALL
+SELECT 'filter user prompts only (vec_ops pre-filter)',
+    'vec_ops(''_raw_chunks'', ''query'', ''diverse'', ''SELECT chunk_id FROM _types_message WHERE type = ''''user_prompt'''''')'
+UNION ALL
+SELECT 'session drill-down',
+    '@session session=d332a1a0 OR @doc-chunks source_id=d332a1a0';
+
 -- @query: hubs
-SELECT g.source_id,
+SELECT g.source_id AS session_id,
     COALESCE(substr(ess.fingerprint_index, 1, 120), src.title) as label,
     ROUND(g.centrality, 4) as centrality, g.community_id
 FROM _enrich_source_graph g

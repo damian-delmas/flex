@@ -4,12 +4,12 @@
 -- @multi: true
 
 -- @query: session_count
-SELECT COUNT(DISTINCT source_id) as sessions
+SELECT COUNT(DISTINCT session_id) as sessions
 FROM messages
 WHERE timestamp > strftime('%s', 'now', '-' || :days || ' days');
 
 -- @query: active_projects
-SELECT project, COUNT(DISTINCT source_id) as sessions
+SELECT project, COUNT(DISTINCT session_id) as sessions
 FROM sessions s
 WHERE s.start_time > strftime('%s', 'now', '-' || :days || ' days')
 GROUP BY project
@@ -25,7 +25,7 @@ ORDER BY ops DESC LIMIT 10;
 
 -- @query: hot_files
 SELECT target_file, COUNT(*) as touches,
-    COUNT(DISTINCT source_id) as sessions
+    COUNT(DISTINCT session_id) as sessions
 FROM messages
 WHERE target_file IS NOT NULL
   AND timestamp > strftime('%s', 'now', '-' || :days || ' days')

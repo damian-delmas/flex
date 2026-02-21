@@ -5,13 +5,13 @@
 
 -- @query: meta
 SELECT
-    source_id as session,
+    session_id as session,
     title,
     datetime(start_time, 'unixepoch', 'localtime') as started,
     message_count as ops,
     primary_cwd as cwd
 FROM sessions
-WHERE source_id LIKE '%' || :session || '%';
+WHERE session_id LIKE '%' || :session || '%';
 
 -- @query: timeline
 SELECT
@@ -19,8 +19,8 @@ SELECT
     COALESCE(target_file, substr(content, 1, 60)) as target,
     datetime(timestamp, 'unixepoch', 'localtime') as ts
 FROM messages
-WHERE source_id LIKE '%' || :session || '%'
-ORDER BY message_number
+WHERE session_id LIKE '%' || :session || '%'
+ORDER BY position
 LIMIT 100;
 
 -- @query: artifacts
@@ -28,7 +28,7 @@ SELECT DISTINCT
     tool_name,
     target_file
 FROM messages
-WHERE source_id LIKE '%' || :session || '%'
+WHERE session_id LIKE '%' || :session || '%'
   AND tool_name IN ('Write', 'Edit', 'MultiEdit')
   AND target_file IS NOT NULL;
 

@@ -8,6 +8,6 @@ SELECT
     substr(content, 1, 80) as preview,
     datetime(timestamp, 'unixepoch', 'localtime') as ts
 FROM messages
-WHERE source_id LIKE '%' || :session || '%'
-ORDER BY message_number
+WHERE session_id LIKE '%' || :session || '%'
+ORDER BY position
 LIMIT :limit

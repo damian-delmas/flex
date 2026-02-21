@@ -4,7 +4,7 @@
 
 SELECT
     tool_name,
-    substr(source_id, 1, 8) as session,
+    substr(session_id, 1, 8) as session,
     target_file,
     datetime(timestamp, 'unixepoch', 'localtime') as ts
 FROM messages

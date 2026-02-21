@@ -5,15 +5,11 @@
 DROP VIEW IF EXISTS sessions;
 CREATE VIEW sessions AS
 SELECT
-    src.source_id,
+    src.source_id AS session_id,
     src.project,
-    src.git_root,
-    src.primary_cwd,
     src.title,
     src.message_count,
-    src.start_time,
-    src.end_time,
-    src.duration_minutes,
+    src.duration_minutes AS duration,
     datetime(src.start_time, 'unixepoch', 'localtime') AS started_at,
     datetime(src.end_time, 'unixepoch', 'localtime') AS ended_at,
     COUNT(DISTINCT s.chunk_id) as chunk_count,
