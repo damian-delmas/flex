@@ -9,6 +9,7 @@ SELECT
     src.project,
     src.title,
     src.message_count,
+    src.start_time,
     src.duration_minutes AS duration,
     datetime(src.start_time, 'unixepoch', 'localtime') AS started_at,
     datetime(src.end_time, 'unixepoch', 'localtime') AS ended_at,

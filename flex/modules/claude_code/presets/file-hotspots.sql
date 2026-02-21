@@ -6,7 +6,7 @@ SELECT
     COALESCE(fi.file_uuid, t.target_file) as file_key,
     t.target_file,
     COUNT(*) as total_ops,
-    COUNT(DISTINCT es.source_id) as sessions,
+    COUNT(DISTINCT es.source_id) as session_count,
     GROUP_CONCAT(DISTINCT t.tool_name) as tools
 FROM _edges_tool_ops t
 JOIN _edges_source es ON t.chunk_id = es.chunk_id

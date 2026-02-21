@@ -3,7 +3,7 @@
 -- @params: path (required), limit (default: 30)
 
 SELECT
-    substr(es.source_id, 1, 8) as session,
+    substr(es.source_id, 1, 8) as session_id,
     t.tool_name,
     t.target_file,
     datetime(c.timestamp, 'unixepoch', 'localtime') as ts
