@@ -32,7 +32,7 @@ Performance:
     100k docs: 5ms
     367k docs: 12ms
 
-Memory: ~15MB per 10k docs (384-dim vectors)
+Memory: ~30MB per 10k docs (768-dim vectors)
 """
 
 import json
@@ -624,7 +624,7 @@ def register_vec_ops(conn, caches: dict, embed_fn, cell_config: dict = None):
     Args:
         conn: SQLite connection
         caches: {table_name: VectorCache}
-        embed_fn: callable(text) -> np.ndarray (384d)
+        embed_fn: callable(text) -> np.ndarray (768d)
         cell_config: dict of vec:* keys from _meta (optional)
 
     SQL usage:

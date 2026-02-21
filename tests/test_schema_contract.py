@@ -10,6 +10,8 @@ Run with: pytest tests/test_schema_contract.py -v
 import sqlite3
 import struct
 
+EMBED_DIM = 768
+
 
 # =============================================================================
 # Prefix Rule Tests
@@ -385,15 +387,15 @@ class TestEmbeddings:
         ).fetchone()
         blob = row[0]
         dim = len(blob) // 4  # float32 = 4 bytes
-        assert dim == 384, f"Expected 384-dim embedding, got {dim}"
+        assert dim == EMBED_DIM, f"Expected {EMBED_DIM}-dim embedding, got {dim}"
 
     def test_embedding_decodable(self, qmem_cell):
         row = qmem_cell.execute(
             "SELECT embedding FROM _raw_chunks LIMIT 1"
         ).fetchone()
         blob = row[0]
-        values = struct.unpack(f'{384}f', blob)
-        assert len(values) == 384
+        values = struct.unpack(f'{EMBED_DIM}f', blob)
+        assert len(values) == EMBED_DIM
         assert all(isinstance(v, float) for v in values)
 
 

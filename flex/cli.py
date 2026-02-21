@@ -463,7 +463,8 @@ def _open_cell_for_search(cell_name: str):
                 config = {r[0]: r[1] for r in rows}
             except Exception:
                 pass
-            register_vec_ops(db, caches, embedder.encode, config)
+            embed_query = lambda text: embedder.encode(text, prefix='search_query: ')
+            register_vec_ops(db, caches, embed_query, config)
     except ImportError:
         pass  # vec_ops won't work but plain SQL is fine
 

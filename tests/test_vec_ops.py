@@ -32,14 +32,16 @@ pytestmark = pytest.mark.skipif(
 # Fixtures
 # =============================================================================
 
-def _make_vec(values, dim=384):
+EMBED_DIM = 768
+
+def _make_vec(values, dim=EMBED_DIM):
     """Create a float32 vector of given dimension, padded with zeros."""
     vec = np.zeros(dim, dtype=np.float32)
     vec[:len(values)] = values
     return vec
 
 
-def _make_blob(values, dim=384):
+def _make_blob(values, dim=EMBED_DIM):
     """Create a float32 BLOB for SQLite storage."""
     return _make_vec(values, dim).tobytes()
 
@@ -163,7 +165,7 @@ class TestLoad:
         assert cache.size == 5
 
     def test_correct_dimension(self, cache):
-        assert cache.dims == 384
+        assert cache.dims == EMBED_DIM
 
     def test_matrix_is_normalized(self, cache):
         norms = np.linalg.norm(cache.matrix, axis=1)
@@ -302,7 +304,7 @@ class TestGetVector:
     def test_returns_vector(self, cache):
         vec = cache.get_vector('a')
         assert vec is not None
-        assert vec.shape == (384,)
+        assert vec.shape == (EMBED_DIM,)
 
     def test_nonexistent_returns_none(self, cache):
         assert cache.get_vector('nonexistent') is None
@@ -323,7 +325,7 @@ class TestDimensionValidation:
             cache.search(wrong)
 
     def test_correct_dimension_ok(self, cache):
-        ok = np.random.randn(384).astype(np.float32)
+        ok = np.random.randn(EMBED_DIM).astype(np.float32)
         results = cache.search(ok)
         assert isinstance(results, list)
 
@@ -334,7 +336,7 @@ class TestDimensionValidation:
 
 class TestMMRLambda:
     def test_high_lambda_favors_relevance(self, cache):
-        q = np.random.randn(384).astype(np.float32)
+        q = np.random.randn(EMBED_DIM).astype(np.float32)
         high = cache.search(q, diverse=True, limit=3, mmr_lambda=0.99)
         low = cache.search(q, diverse=True, limit=3, mmr_lambda=0.01)
         assert len(high) == 3
@@ -624,7 +626,7 @@ class TestAuthorizerGuard:
         cache.load_columns(mod_db, '_raw_chunks', 'id')
 
         def _embed(text):
-            v = np.zeros(384, dtype=np.float32)
+            v = np.zeros(EMBED_DIM, dtype=np.float32)
             v[0] = 1.0
             return v.reshape(1, -1)
 
@@ -704,7 +706,7 @@ class TestCentroid:
     """like:id1,id2 centroid token."""
 
     def test_centroid_returns_results(self, mod_cache):
-        query = _make_vec([0.0] * 384)  # zero — centroid replaces it
+        query = _make_vec([0.0] * EMBED_DIM)  # zero — centroid replaces it
         modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None,
                      'like': ['a', 'b'], 'trajectory_from': None, 'trajectory_to': None,
@@ -713,7 +715,7 @@ class TestCentroid:
         assert len(results) > 0
 
     def test_centroid_differs_from_single(self, mod_cache):
-        query = _make_vec([0.0] * 384)
+        query = _make_vec([0.0] * EMBED_DIM)
         mods_single = {'recent': False, 'recent_days': None,
                        'unlike': None, 'diverse': False, 'limit': None,
                        'like': ['a'], 'trajectory_from': None, 'trajectory_to': None,
@@ -729,7 +731,7 @@ class TestCentroid:
         assert scores1 != scores2
 
     def test_centroid_unknown_ids(self, mod_cache):
-        query = _make_vec([0.0] * 384)
+        query = _make_vec([0.0] * EMBED_DIM)
         modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None,
                      'like': ['FAKE1', 'FAKE2'], 'trajectory_from': None, 'trajectory_to': None,
@@ -738,7 +740,7 @@ class TestCentroid:
         assert len(results) == 0
 
     def test_centroid_composes_with_diverse(self, mod_cache):
-        query = _make_vec([0.0] * 384)
+        query = _make_vec([0.0] * EMBED_DIM)
         modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': True, 'limit': None,
                      'like': ['a', 'b'], 'trajectory_from': None, 'trajectory_to': None,
@@ -747,7 +749,7 @@ class TestCentroid:
         assert len(results) == 3
 
     def test_centroid_with_pre_filter(self, mod_cache):
-        query = _make_vec([0.0] * 384)
+        query = _make_vec([0.0] * EMBED_DIM)
         modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None,
                      'like': ['a', 'b'], 'trajectory_from': None, 'trajectory_to': None,
@@ -768,11 +770,11 @@ class TestTrajectory:
     def _embed_fn(self, text):
         """Simple test embed: hash text to a deterministic vector."""
         np.random.seed(hash(text) % 2**31)
-        vec = np.random.randn(384).astype(np.float32)
-        return vec.reshape(1, -1)  # (1, 384) like real embedder
+        vec = np.random.randn(EMBED_DIM).astype(np.float32)
+        return vec.reshape(1, -1)  # (1, EMBED_DIM) like real embedder
 
     def test_trajectory_returns_results(self, mod_cache):
-        query = _make_vec([0.0] * 384)
+        query = _make_vec([0.0] * EMBED_DIM)
         modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None,
                      'like': None,
@@ -784,7 +786,7 @@ class TestTrajectory:
         assert len(results) > 0
 
     def test_trajectory_composes_with_diverse(self, mod_cache):
-        query = _make_vec([0.0] * 384)
+        query = _make_vec([0.0] * EMBED_DIM)
         modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': True, 'limit': None,
                      'like': None,
@@ -807,7 +809,7 @@ class TestTrajectory:
         assert len(results) > 0
 
     def test_trajectory_with_pre_filter(self, mod_cache):
-        query = _make_vec([0.0] * 384)
+        query = _make_vec([0.0] * EMBED_DIM)
         modifiers = {'recent': False, 'recent_days': None,
                      'unlike': None, 'diverse': False, 'limit': None,
                      'like': None,

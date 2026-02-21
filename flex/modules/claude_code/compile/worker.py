@@ -827,14 +827,19 @@ def process_queue(conn: sqlite3.Connection) -> dict:
     return {'processed': len(session_ids), 'embedded': embedded}
 
 
-def startup_backfill(conn: sqlite3.Connection):
-    """Backfill sessions missed during pipeline outage."""
+def startup_backfill(conn: sqlite3.Connection, commit_every: int = 50):
+    """Backfill sessions missed during pipeline outage.
+
+    Commits every `commit_every` sessions to keep WAL bounded.
+    Resumable: on restart, last_indexed advances past committed sessions.
+    """
     print("[worker] Running startup backfill...", file=sys.stderr)
     last_indexed = conn.execute(
         "SELECT COALESCE(MAX(end_time), 0) FROM _raw_sources"
     ).fetchone()[0]
 
     backfilled = 0
+    sessions_since_commit = 0
     for jsonl in CLAUDE_PROJECTS.rglob("*.jsonl"):
         try:
             if jsonl.stat().st_mtime > last_indexed:
@@ -842,11 +847,19 @@ def startup_backfill(conn: sqlite3.Connection):
                 count = sync_session_messages(session_id, conn)
                 if count > 0:
                     backfilled += count
+                    sessions_since_commit += 1
+                    if sessions_since_commit >= commit_every:
+                        conn.commit()
+                        print(f"[worker] Backfill progress: {backfilled} chunks",
+                              file=sys.stderr)
+                        sessions_since_commit = 0
         except Exception:
             pass
 
-    if backfilled > 0:
+    if sessions_since_commit > 0:
         conn.commit()
+
+    if backfilled > 0:
         print(f"[worker] Backfilled {backfilled} chunks", file=sys.stderr)
     else:
         print("[worker] No backfill needed", file=sys.stderr)

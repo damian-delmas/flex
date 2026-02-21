@@ -124,7 +124,8 @@ def _register_udf(db: sqlite3.Connection, state: dict):
         from flex.retrieve.vec_ops import register_vec_ops
         embedder = _get_embedder()
         if embedder:
-            register_vec_ops(db, state['caches'], embedder.encode, state['config'])
+            embed_query = lambda text: embedder.encode(text, prefix='search_query: ')
+            register_vec_ops(db, state['caches'], embed_query, state['config'])
     except ImportError:
         pass
 

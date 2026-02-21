@@ -23,18 +23,20 @@ except ImportError:
 
 pytestmark = pytest.mark.skipif(not HAS_WORKER, reason="docpac worker not importable")
 
+EMBED_DIM = 768
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_embedding(dim=384):
+def _make_embedding(dim=EMBED_DIM):
     return struct.pack(f'{dim}f', *([0.1] * dim))
 
 
 def _mock_embed_fn(texts):
-    """Deterministic 384-dim embeddings."""
-    vecs = np.array([[0.1] * 384 for _ in texts], dtype=np.float32)
+    """Deterministic embeddings."""
+    vecs = np.array([[0.1] * EMBED_DIM for _ in texts], dtype=np.float32)
     return vecs
 
 

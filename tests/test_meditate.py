@@ -26,12 +26,14 @@ pytestmark = pytest.mark.skipif(
     reason="flex.manage.meditate not yet implemented"
 )
 
+EMBED_DIM = 768
+
 
 # =============================================================================
 # Fixtures
 # =============================================================================
 
-def _make_embedding(values, dim=384):
+def _make_embedding(values, dim=EMBED_DIM):
     """Create float32 BLOB from first few values, zero-padded."""
     vec = np.zeros(dim, dtype=np.float32)
     vec[:len(values)] = values

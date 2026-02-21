@@ -25,12 +25,14 @@ def _can_import():
 
 pytestmark = pytest.mark.skipif(not _can_import(), reason="flex not importable")
 
+EMBED_DIM = 768
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _make_embedding(dim=384):
+def _make_embedding(dim=EMBED_DIM):
     return struct.pack(f'{dim}f', *([0.1] * dim))
 
 
@@ -186,7 +188,7 @@ class TestSingleIDFormat:
         import flex.modules.claude_code.compile.worker as w
         monkeypatch.setattr(w, 'find_jsonl', lambda sid: jsonl_path if sid == session_id else None)
         monkeypatch.setattr(w, 'get_embedder', lambda: None)
-        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * 384 for _ in texts])
+        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * EMBED_DIM for _ in texts])
         monkeypatch.setattr(w, 'serialize_f32', lambda v: _make_embedding())
         # Disable SOMA
         monkeypatch.setattr(w, 'soma_enrich', None)
@@ -217,7 +219,7 @@ class TestNoTruncation:
         import flex.modules.claude_code.compile.worker as w
         monkeypatch.setattr(w, 'find_jsonl', lambda sid: jsonl_path if sid == session_id else None)
         monkeypatch.setattr(w, 'get_embedder', lambda: None)
-        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * 384 for _ in texts])
+        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * EMBED_DIM for _ in texts])
         monkeypatch.setattr(w, 'serialize_f32', lambda v: _make_embedding())
         monkeypatch.setattr(w, 'soma_enrich', None)
         monkeypatch.setattr(w, 'soma_insert_edges', None)
@@ -244,7 +246,7 @@ class TestToolOpsExtraction:
         import flex.modules.claude_code.compile.worker as w
         monkeypatch.setattr(w, 'find_jsonl', lambda sid: jsonl_path if sid == session_id else None)
         monkeypatch.setattr(w, 'get_embedder', lambda: None)
-        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * 384 for _ in texts])
+        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * EMBED_DIM for _ in texts])
         monkeypatch.setattr(w, 'serialize_f32', lambda v: _make_embedding())
         monkeypatch.setattr(w, 'soma_enrich', None)
         monkeypatch.setattr(w, 'soma_insert_edges', None)
@@ -278,7 +280,7 @@ class TestToolOnlyChunks:
         import flex.modules.claude_code.compile.worker as w
         monkeypatch.setattr(w, 'find_jsonl', lambda sid: jsonl_path if sid == session_id else None)
         monkeypatch.setattr(w, 'get_embedder', lambda: None)
-        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * 384 for _ in texts])
+        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * EMBED_DIM for _ in texts])
         monkeypatch.setattr(w, 'serialize_f32', lambda v: _make_embedding())
         monkeypatch.setattr(w, 'soma_enrich', None)
         monkeypatch.setattr(w, 'soma_insert_edges', None)
@@ -320,7 +322,7 @@ class TestThinkingBlocks:
         import flex.modules.claude_code.compile.worker as w
         monkeypatch.setattr(w, 'find_jsonl', lambda sid: jsonl_path if sid == session_id else None)
         monkeypatch.setattr(w, 'get_embedder', lambda: None)
-        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * 384 for _ in texts])
+        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * EMBED_DIM for _ in texts])
         monkeypatch.setattr(w, 'serialize_f32', lambda v: _make_embedding())
         monkeypatch.setattr(w, 'soma_enrich', None)
         monkeypatch.setattr(w, 'soma_insert_edges', None)
@@ -349,7 +351,7 @@ class TestFileHistorySnapshot:
         import flex.modules.claude_code.compile.worker as w
         monkeypatch.setattr(w, 'find_jsonl', lambda sid: jsonl_path if sid == session_id else None)
         monkeypatch.setattr(w, 'get_embedder', lambda: None)
-        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * 384 for _ in texts])
+        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * EMBED_DIM for _ in texts])
         monkeypatch.setattr(w, 'serialize_f32', lambda v: _make_embedding())
         monkeypatch.setattr(w, 'soma_enrich', None)
         monkeypatch.setattr(w, 'soma_insert_edges', None)
@@ -380,7 +382,7 @@ class TestMetadataFields:
         import flex.modules.claude_code.compile.worker as w
         monkeypatch.setattr(w, 'find_jsonl', lambda sid: jsonl_path if sid == session_id else None)
         monkeypatch.setattr(w, 'get_embedder', lambda: None)
-        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * 384 for _ in texts])
+        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * EMBED_DIM for _ in texts])
         monkeypatch.setattr(w, 'serialize_f32', lambda v: _make_embedding())
         monkeypatch.setattr(w, 'soma_enrich', None)
         monkeypatch.setattr(w, 'soma_insert_edges', None)
@@ -415,7 +417,7 @@ class TestIdempotency:
         import flex.modules.claude_code.compile.worker as w
         monkeypatch.setattr(w, 'find_jsonl', lambda sid: jsonl_path if sid == session_id else None)
         monkeypatch.setattr(w, 'get_embedder', lambda: None)
-        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * 384 for _ in texts])
+        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * EMBED_DIM for _ in texts])
         monkeypatch.setattr(w, 'serialize_f32', lambda v: _make_embedding())
         monkeypatch.setattr(w, 'soma_enrich', None)
         monkeypatch.setattr(w, 'soma_insert_edges', None)
@@ -447,7 +449,7 @@ class TestToolContentBridge:
         import flex.modules.claude_code.compile.worker as w
         monkeypatch.setattr(w, 'find_jsonl', lambda sid: jsonl_path if sid == session_id else None)
         monkeypatch.setattr(w, 'get_embedder', lambda: None)
-        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * 384 for _ in texts])
+        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * EMBED_DIM for _ in texts])
         monkeypatch.setattr(w, 'serialize_f32', lambda v: _make_embedding())
         monkeypatch.setattr(w, 'soma_enrich', None)
         monkeypatch.setattr(w, 'soma_insert_edges', None)
@@ -524,7 +526,7 @@ class TestOldBlobHashFromSnapshot:
         from pathlib import Path
         monkeypatch.setattr(w, 'find_jsonl', lambda sid: jsonl_path if sid == session_id else None)
         monkeypatch.setattr(w, 'get_embedder', lambda: None)
-        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * 384 for _ in texts])
+        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * EMBED_DIM for _ in texts])
         monkeypatch.setattr(w, 'serialize_f32', lambda v: _make_embedding())
         monkeypatch.setattr(Path, 'home', classmethod(lambda cls: tmp_path))
 
@@ -601,7 +603,7 @@ class TestOldBlobHashFromSnapshot:
         from pathlib import Path
         monkeypatch.setattr(w, 'find_jsonl', lambda sid: jsonl_path if sid == session_id else None)
         monkeypatch.setattr(w, 'get_embedder', lambda: None)
-        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * 384 for _ in texts])
+        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * EMBED_DIM for _ in texts])
         monkeypatch.setattr(w, 'serialize_f32', lambda v: _make_embedding())
         monkeypatch.setattr(Path, 'home', classmethod(lambda cls: tmp_path))
 
@@ -632,7 +634,7 @@ class TestProgressAndSystemSkipped:
         import flex.modules.claude_code.compile.worker as w
         monkeypatch.setattr(w, 'find_jsonl', lambda sid: jsonl_path if sid == session_id else None)
         monkeypatch.setattr(w, 'get_embedder', lambda: None)
-        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * 384 for _ in texts])
+        monkeypatch.setattr(w, 'encode', lambda texts: [[0.1] * EMBED_DIM for _ in texts])
         monkeypatch.setattr(w, 'serialize_f32', lambda v: _make_embedding())
         monkeypatch.setattr(w, 'soma_enrich', None)
         monkeypatch.setattr(w, 'soma_insert_edges', None)

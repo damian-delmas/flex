@@ -196,8 +196,10 @@ CREATE INDEX IF NOT EXISTS idx_eui_uuid ON _edges_url_identity(url_uuid);
 """
 
 
-def _make_embedding(dim=384):
-    """Create a fake 384-dim float32 embedding BLOB."""
+EMBED_DIM = 768
+
+def _make_embedding(dim=EMBED_DIM):
+    """Create a fake float32 embedding BLOB."""
     return struct.pack(f'{dim}f', *([0.1] * dim))
 
 

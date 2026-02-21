@@ -19,6 +19,8 @@ import pytest
 FLEX_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(FLEX_ROOT))
 
+EMBED_DIM = 768
+
 from flex.modules.claude_code.manage.fingerprint import (
     HDBSCAN_MIN_CHUNKS,
     MAX_CONTENT_CHARS,
@@ -47,7 +49,7 @@ from flex.modules.claude_code.manage.fingerprint import (
 
 def _chunk(content='', tool_name=None, target_file=None, msg_num=0):
     """Build a minimal chunk dict."""
-    emb = np.random.randn(384).astype(np.float32)
+    emb = np.random.randn(EMBED_DIM).astype(np.float32)
     return {
         'id': f'chunk_{msg_num}',
         'embedding': emb,
@@ -63,7 +65,7 @@ def _embed_fn(texts):
     vecs = []
     for t in texts:
         np.random.seed(hash(t) % 2**31)
-        vecs.append(np.random.randn(384).astype(np.float32))
+        vecs.append(np.random.randn(EMBED_DIM).astype(np.float32))
     return np.array(vecs)
 
 
@@ -125,7 +127,7 @@ class TestSelectRepresentatives:
             (i, _chunk(f'Sentence number {i} which is definitely long enough to pass the fifty char filter easily.', msg_num=i))
             for i in range(15)
         ]
-        embeddings = np.random.randn(15, 384).astype(np.float32)
+        embeddings = np.random.randn(15, EMBED_DIM).astype(np.float32)
         labels = np.array([0, 0, 0, 0, 0, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1])
 
         reps = select_representatives(content_items, embeddings, labels)
@@ -141,7 +143,7 @@ class TestSelectRepresentatives:
             (i, _chunk(f'Noise span {i} that is long enough text to survive the fifty char filter easily.', msg_num=i))
             for i in range(5)
         ]
-        embeddings = np.random.randn(5, 384).astype(np.float32)
+        embeddings = np.random.randn(5, EMBED_DIM).astype(np.float32)
         labels = np.array([-1, -1, -1, -1, -1])
 
         reps = select_representatives(content_items, embeddings, labels)
@@ -155,7 +157,7 @@ class TestSelectRepresentatives:
             (i, _chunk(f'Noise chunk number {i} with enough diverse vocabulary words to pass the entropy filter and length check.', msg_num=i))
             for i in range(MAX_NOISE_REPS + 10)
         ]
-        embeddings = np.random.randn(MAX_NOISE_REPS + 10, 384).astype(np.float32)
+        embeddings = np.random.randn(MAX_NOISE_REPS + 10, EMBED_DIM).astype(np.float32)
         labels = np.array([-1] * (MAX_NOISE_REPS + 10))
 
         reps = select_representatives(content_items, embeddings, labels)
