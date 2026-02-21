@@ -30,9 +30,9 @@ def build_delegation_graph(db):
     rows = db.execute("""
         SELECT DISTINCT
             COALESCE(d.parent_source_id, substr(d.chunk_id, 1, 36)) as parent,
-            d.child_doc_id as child
+            d.child_session_id as child
         FROM _edges_delegations d
-        WHERE d.child_doc_id IS NOT NULL
+        WHERE d.child_session_id IS NOT NULL
     """).fetchall()
 
     G = nx.DiGraph()

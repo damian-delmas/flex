@@ -21,11 +21,11 @@ SELECT
     t.success,
     t.cwd,
     tp.type,
-    d.child_doc_id AS child_session_id,
+    d.child_session_id,
     d.agent_type
 FROM _raw_chunks r
 LEFT JOIN _edges_source s ON r.id = s.chunk_id
 LEFT JOIN _raw_sources src ON s.source_id = src.source_id
 LEFT JOIN _edges_tool_ops t ON r.id = t.chunk_id
 LEFT JOIN _types_message tp ON r.id = tp.chunk_id
-LEFT JOIN (SELECT chunk_id, child_doc_id, agent_type FROM _edges_delegations GROUP BY chunk_id) d ON r.id = d.chunk_id;
+LEFT JOIN (SELECT chunk_id, child_session_id, agent_type FROM _edges_delegations GROUP BY chunk_id) d ON r.id = d.chunk_id;

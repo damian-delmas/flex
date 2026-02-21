@@ -33,7 +33,7 @@ WHERE session_id LIKE '%' || :session || '%'
 
 -- @query: agents
 SELECT
-    d.child_doc_id as child_session,
+    d.child_session_id as child_session,
     d.agent_type
 FROM _edges_delegations d
 WHERE COALESCE(d.parent_source_id, substr(d.chunk_id, 1, 36)) LIKE '%' || :session || '%'

@@ -258,7 +258,7 @@ def _ensure_core_tables(conn: sqlite3.Connection):
         CREATE TABLE IF NOT EXISTS _edges_delegations (
             id INTEGER PRIMARY KEY,
             chunk_id TEXT,
-            child_doc_id TEXT,
+            child_session_id TEXT,
             agent_type TEXT,
             created_at INTEGER,
             parent_source_id TEXT
@@ -402,7 +402,7 @@ def insert_chunk_atom(conn: sqlite3.Connection, chunk: dict):
     if chunk.get('spawned_agent'):
         ensure_source_exists(conn, chunk['spawned_agent'])
         cur.execute("""
-            INSERT OR IGNORE INTO _edges_delegations (chunk_id, child_doc_id, agent_type, created_at)
+            INSERT OR IGNORE INTO _edges_delegations (chunk_id, child_session_id, agent_type, created_at)
             VALUES (?, ?, NULL, ?)
         """, (chunk_id, chunk['spawned_agent'], chunk['timestamp']))
 
@@ -734,7 +734,7 @@ def sync_session_messages(session_id: str, conn: sqlite3.Connection) -> int:
             ensure_source_exists(conn, spawned_agent)
             cur.execute("""
                 INSERT OR IGNORE INTO _edges_delegations
-                (chunk_id, child_doc_id, agent_type, created_at, parent_source_id)
+                (chunk_id, child_session_id, agent_type, created_at, parent_source_id)
                 VALUES (?, ?, NULL, ?, ?)
             """, (chunk_id, spawned_agent, ts, parent_sid))
         except Exception as e:

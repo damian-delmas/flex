@@ -295,25 +295,25 @@ def backfill_from_delegations(db) -> int:
             project = (
                 SELECT rs_parent.project
                 FROM _edges_delegations d
-                JOIN _edges_source es ON d.chunk_id = es.chunk_id
-                JOIN _raw_sources rs_parent ON es.source_id = rs_parent.source_id
-                WHERE d.child_doc_id = _raw_sources.source_id
+                JOIN _raw_sources rs_parent
+                  ON COALESCE(d.parent_source_id, substr(d.chunk_id, 1, 36)) = rs_parent.source_id
+                WHERE d.child_session_id = _raw_sources.source_id
                   AND rs_parent.project IS NOT NULL AND rs_parent.project != ''
                 LIMIT 1
             ),
             git_root = (
                 SELECT rs_parent.git_root
                 FROM _edges_delegations d
-                JOIN _edges_source es ON d.chunk_id = es.chunk_id
-                JOIN _raw_sources rs_parent ON es.source_id = rs_parent.source_id
-                WHERE d.child_doc_id = _raw_sources.source_id
+                JOIN _raw_sources rs_parent
+                  ON COALESCE(d.parent_source_id, substr(d.chunk_id, 1, 36)) = rs_parent.source_id
+                WHERE d.child_session_id = _raw_sources.source_id
                   AND rs_parent.git_root IS NOT NULL
                 LIMIT 1
             )
         WHERE _raw_sources.git_root IS NULL
           AND EXISTS (
               SELECT 1 FROM _edges_delegations d
-              WHERE d.child_doc_id = _raw_sources.source_id
+              WHERE d.child_session_id = _raw_sources.source_id
           )
     """)
     return result.rowcount
