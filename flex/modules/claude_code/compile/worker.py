@@ -23,7 +23,8 @@ import struct
 from pathlib import Path
 from datetime import datetime
 
-from flex.registry import resolve_cell, FLEX_HOME
+import uuid as _uuid
+from flex.registry import resolve_cell, register_cell, FLEX_HOME
 from flex.onnx.embed import get_model, encode
 from flex.modules.claude_code.compile.soft_detect import detect_file_ops
 # Docpac module — optional, graceful degradation when absent
@@ -752,6 +753,75 @@ def startup_backfill(conn: sqlite3.Connection):
         print(f"[worker] Backfilled {backfilled} chunks", file=sys.stderr)
     else:
         print("[worker] No backfill needed", file=sys.stderr)
+
+
+def bootstrap_claude_code_cell() -> Path:
+    """Create claude_code cell if not exists. Returns db path."""
+    existing = resolve_cell('claude_code')
+    if existing and existing.exists():
+        return existing
+
+    cell_uuid = str(_uuid.uuid4())
+    cells_dir = FLEX_HOME / "cells"
+    cells_dir.mkdir(parents=True, exist_ok=True)
+    db_path = cells_dir / f"{cell_uuid}.db"
+
+    conn = sqlite3.connect(str(db_path), timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    _ensure_core_tables(conn)
+    _ensure_content_tables(conn)
+    if soma_ensure_tables:
+        soma_ensure_tables(conn)
+
+    # Populate _meta
+    conn.execute(
+        "INSERT OR IGNORE INTO _meta VALUES ('description', ?)",
+        ('Claude Code session provenance. Each doc is a session, '
+         'each chunk is a tool call/prompt/response.',)
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO _meta VALUES ('cell_type', 'claude-code')"
+    )
+    conn.commit()
+    conn.close()
+
+    register_cell('claude_code', str(db_path), cell_type='claude-code',
+                   description='Claude Code session provenance')
+    return db_path
+
+
+def initial_backfill(conn, progress_cb=None) -> dict:
+    """Backfill all sessions with per-session commits and progress.
+
+    Args:
+        conn: Open SQLite connection to the cell.
+        progress_cb: Optional callback(files_done, files_total, sessions, chunks, elapsed).
+
+    Returns:
+        dict with sessions, chunks, elapsed.
+    """
+    jsonls = list(CLAUDE_PROJECTS.rglob("*.jsonl"))
+    total = len(jsonls)
+    sessions = 0
+    chunks = 0
+    t0 = time.time()
+
+    for i, jsonl in enumerate(jsonls, 1):
+        session_id = jsonl.stem
+        try:
+            count = sync_session_messages(session_id, conn)
+            conn.commit()
+            if count > 0:
+                chunks += count
+                sessions += 1
+        except Exception as e:
+            print(f"[init] Error syncing {session_id[:8]}: {e}", file=sys.stderr)
+
+        if progress_cb:
+            progress_cb(i, total, sessions, chunks, time.time() - t0)
+
+    return {'sessions': sessions, 'chunks': chunks, 'elapsed': time.time() - t0}
 
 
 def _cc_graph_stale(conn, threshold=50):

@@ -19,6 +19,23 @@ _ort = None
 _tokenizer = None
 
 ONNX_DIR = Path(__file__).parent
+_USER_MODELS = Path.home() / ".flex" / "models"
+
+
+def _resolve_model_path() -> Path:
+    """Resolve model: bundled package first, then ~/.flex/models/."""
+    bundled = ONNX_DIR / "model.onnx"
+    if bundled.exists():
+        return bundled
+    user = _USER_MODELS / "model.onnx"
+    if user.exists():
+        return user
+    raise RuntimeError(
+        "Embedding model not found.\n"
+        f"  Checked: {bundled}\n"
+        f"  Checked: {user}\n"
+        "  Run 'flex init' to download it."
+    )
 
 
 def _get_onnxruntime():
@@ -41,7 +58,7 @@ class ONNXEmbedder:
     """ONNX-based sentence embedder compatible with sentence-transformers API."""
 
     def __init__(self, model_path: Path = None):
-        self.model_path = model_path or ONNX_DIR / "model.onnx"
+        self.model_path = model_path or _resolve_model_path()
         self._session = None
         self._tokenizer = None
 

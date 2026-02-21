@@ -156,6 +156,54 @@ def _patch_claude_json():
     return False
 
 
+def _run_enrichment(conn):
+    """Run post-backfill enrichment pipeline."""
+    import time as _time
+    t0 = _time.time()
+
+    try:
+        from flex.modules.claude_code.manage.rebuild_all import (
+            rebuild_warmup_types, reembed_sources, rebuild_source_graph,
+        )
+        from flex.modules.claude_code.manage.enrich_summary import run as run_fingerprints
+        from flex.modules.claude_code.manage.enrich_repo_project import run as run_repo_project
+        from flex.views import regenerate_views, install_views
+        from flex.utils.install_presets import install_cell as install_presets_cell
+
+        print("  Enriching...")
+
+        rebuild_warmup_types(conn)
+        reembed_sources(conn)
+        rebuild_source_graph(conn)
+        print("  [ok] graph built")
+
+        n_fp = run_fingerprints(conn)
+        print(f"  [ok] {n_fp} sessions fingerprinted")
+
+        n_rp = run_repo_project(conn)
+        print(f"  [ok] {n_rp} sources attributed")
+
+        install_presets_cell('claude_code')
+        print("  [ok] presets installed")
+
+        # Curated views
+        view_dir = _find_view_dir('claude_code', 'claude-code')
+        if view_dir:
+            install_views(conn, view_dir)
+            print("  [ok] curated views installed")
+
+        regenerate_views(conn)
+        conn.commit()
+        print("  [ok] views generated")
+
+        print(f"  [ok] enrichment done in {_time.time()-t0:.0f}s")
+
+    except ImportError as e:
+        print(f"  [skip] enrichment unavailable: {e}")
+    except Exception as e:
+        print(f"  [warn] enrichment error: {e}")
+
+
 def cmd_init(args):
     """Wire hooks, daemon, and MCP for Claude Code capture."""
     print("flex init")
@@ -166,27 +214,143 @@ def cmd_init(args):
     (FLEX_HOME / "cells").mkdir(exist_ok=True)
     print("  [ok] ~/.flex/ created")
 
-    # 2. Install hooks
+    # 2. Download model
+    from flex.onnx.fetch import download_model, model_ready
+    if model_ready():
+        print("  [ok] model already downloaded")
+    else:
+        print("  Downloading embedding model...")
+        try:
+            download_model()
+            print("  [ok] model downloaded")
+        except RuntimeError as e:
+            print(f"  [FAIL] {e}")
+            print("  Continuing without model — backfill will be skipped.")
+            print()
+            # Fall through to hooks/services without backfill
+            _install_hooks()
+            print("  [ok] hooks installed")
+            _patch_settings_json()
+            print("  [ok] settings.json patched")
+            if _install_systemd():
+                print("  [ok] services started")
+            _patch_claude_json()
+            print()
+            print("Done (partial — model download failed).")
+            return
+
+    # 3. Install hooks
     installed = _install_hooks()
     print(f"  [ok] hooks installed: {', '.join(installed)}")
 
-    # 3. Patch settings.json
+    # 4. Patch settings.json
     _patch_settings_json()
     print("  [ok] ~/.claude/settings.json patched")
 
-    # 4. Install systemd services
+    # 5. Detect sessions + bootstrap cell
+    from flex.modules.claude_code.compile.worker import (
+        bootstrap_claude_code_cell, initial_backfill, CLAUDE_PROJECTS,
+    )
+    import sqlite3
+
+    jsonls = list(CLAUDE_PROJECTS.rglob("*.jsonl"))
+    if jsonls:
+        print(f"  Found {len(jsonls)} Claude Code sessions.")
+        cell_path = bootstrap_claude_code_cell()
+        print(f"  [ok] cell ready ({cell_path.name})")
+
+        # 6. Backfill
+        conn = sqlite3.connect(str(cell_path), timeout=30.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+
+        def _progress(i, total, sessions, chunks, elapsed):
+            sys.stdout.write(
+                f"\r  Indexing... {i}/{total} files "
+                f"({sessions} sessions, {chunks:,} chunks) [{elapsed:.0f}s]"
+            )
+            sys.stdout.flush()
+
+        stats = initial_backfill(conn, progress_cb=_progress)
+        print()  # newline after \r
+        print(
+            f"  [ok] indexed {stats['sessions']} sessions, "
+            f"{stats['chunks']:,} chunks in {stats['elapsed']:.0f}s"
+        )
+
+        # 7. Enrichment
+        _run_enrichment(conn)
+        conn.close()
+    else:
+        print("  No Claude Code sessions found. Cell will be created on first use.")
+
+    # 8. Install systemd services (AFTER cell exists)
     if _install_systemd():
         print("  [ok] flex-worker + flex-mcp services started")
 
-    # 5. Patch .claude.json
+    # 9. Patch .claude.json
     if _patch_claude_json():
         print("  [ok] MCP server wired (localhost:8081)")
     else:
         print("  [ok] MCP server already wired")
 
     print()
-    print("Done. Claude Code will now capture your sessions automatically.")
-    print("Use 'flex search \"your query\"' to search, or ask Claude directly.")
+    print("Done. Your sessions are searchable.")
+    print("Use 'flex search \"your query\"' or ask Claude directly.")
+
+
+# ============================================================
+# flex index
+# ============================================================
+
+def cmd_index(args):
+    """Index sessions or corpus."""
+    import sqlite3
+
+    if args.source == "claude-code":
+        from flex.modules.claude_code.compile.worker import (
+            bootstrap_claude_code_cell, initial_backfill, CLAUDE_PROJECTS,
+        )
+
+        jsonls = list(CLAUDE_PROJECTS.rglob("*.jsonl"))
+        if not jsonls:
+            print("No Claude Code sessions found in ~/.claude/projects/")
+            return
+
+        print(f"Found {len(jsonls)} Claude Code sessions.")
+        cell_path = bootstrap_claude_code_cell()
+
+        conn = sqlite3.connect(str(cell_path), timeout=30.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+
+        def _progress(i, total, sessions, chunks, elapsed):
+            sys.stdout.write(
+                f"\r  Indexing... {i}/{total} files "
+                f"({sessions} sessions, {chunks:,} chunks) [{elapsed:.0f}s]"
+            )
+            sys.stdout.flush()
+
+        stats = initial_backfill(conn, progress_cb=_progress)
+        print()
+        print(
+            f"Indexed {stats['sessions']} sessions, "
+            f"{stats['chunks']:,} chunks in {stats['elapsed']:.0f}s"
+        )
+
+        _run_enrichment(conn)
+        conn.close()
+
+    elif args.source == "docpac":
+        if not args.path:
+            print("docpac requires a path: flex index docpac /path/to/corpus")
+            return
+        subprocess.run(
+            [sys.executable, "-m", "flex.modules.docpac.compile.init", args.path],
+            check=True,
+        )
 
 
 # ============================================================
@@ -499,6 +663,11 @@ def main():
     # flex init
     sub.add_parser("init", help="Wire hooks, daemon, and MCP for Claude Code")
 
+    # flex index
+    idx = sub.add_parser("index", help="Index sessions or corpus")
+    idx.add_argument("source", choices=["claude-code", "docpac"])
+    idx.add_argument("path", nargs="?", help="Corpus path (docpac only)")
+
     # flex search
     search_p = sub.add_parser("search", help="Search your sessions")
     search_p.add_argument("query", help="SQL query, @preset, or vec_ops expression")
@@ -513,6 +682,8 @@ def main():
     args = parser.parse_args()
     if args.command == "init":
         cmd_init(args)
+    elif args.command == "index":
+        cmd_index(args)
     elif args.command == "search":
         cmd_search(args)
     elif args.command == "sync":
