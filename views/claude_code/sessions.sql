@@ -14,6 +14,8 @@ SELECT
     src.start_time,
     src.end_time,
     src.duration_minutes,
+    datetime(src.start_time, 'unixepoch', 'localtime') AS started_at,
+    datetime(src.end_time, 'unixepoch', 'localtime') AS ended_at,
     COUNT(DISTINCT s.chunk_id) as chunk_count,
     COALESCE(w.is_warmup_only, 0) AS is_warmup_only,
     ess.fingerprint_index,
