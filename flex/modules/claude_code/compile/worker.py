@@ -125,20 +125,31 @@ def ensure_source_exists(conn: sqlite3.Connection, session_id: str, cwd: str = N
     cur.execute("""
         INSERT INTO _raw_sources
         (source_id, source, project, git_root, start_time, primary_cwd, message_count, episode_count)
-        VALUES (?, ?, ?, ?, ?, ?, 0, 0)
-    """, (session_id, f"claude_code:{session_id}", project, git_root, int(time.time()), cwd))
+        VALUES (?, ?, ?, ?, NULL, ?, 0, 0)
+    """, (session_id, f"claude_code:{session_id}", project, git_root, cwd))
 
 
 def update_source_stats(conn: sqlite3.Connection, session_id: str, chunk: dict):
-    """Increment message_count and update title/end_time on source."""
+    """Increment message_count and update start_time/end_time on source."""
     cur = conn.cursor()
+    ts = chunk['timestamp']
 
     cur.execute("""
         UPDATE _raw_sources
         SET message_count = message_count + 1,
-            end_time = ?
+            start_time = CASE
+                WHEN start_time IS NULL THEN ?
+                WHEN ? < start_time THEN ?
+                ELSE start_time
+            END,
+            end_time = ?,
+            duration_minutes = CASE
+                WHEN start_time IS NOT NULL AND ? > start_time
+                THEN (? - start_time) / 60
+                ELSE duration_minutes
+            END
         WHERE source_id = ?
-    """, (chunk['timestamp'], session_id))
+    """, (ts, ts, ts, ts, ts, ts, session_id))
 
     # Set title from first meaningful content (only if title is NULL)
     if chunk.get('content') and chunk.get('tool_name') != 'Read':

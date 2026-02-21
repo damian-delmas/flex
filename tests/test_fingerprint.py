@@ -201,9 +201,9 @@ class TestFormatToolLine:
         assert format_tool_line(ch) == 'op:WebSearch `flexmem npm availability`'
 
     def test_mcp_tool(self):
-        ch = _chunk(tool_name='mcp__flex__search')
+        ch = _chunk(tool_name='mcp__flex__flex_search')
         result = format_tool_line(ch)
-        assert result == 'op:search'
+        assert result == 'op:flex_search'
 
     def test_skip_tools(self):
         for tool in SKIP_TOOLS:
