@@ -340,8 +340,6 @@ def build_instructions() -> str:
     # --- Hardcoded: query-writer instructions ---
     parts.extend([
         "",
-        "START: query=\"@orient\" for cell schema, columns, presets, and graph intelligence.",
-        "",
         "QUERY PATTERN — three phases: SQL → vec_ops → SQL",
         "",
         "  Phase 1 — SQL pre-filter. Restricts which chunks enter the landscape.",
@@ -441,7 +439,7 @@ def build_instructions() -> str:
         "METHODOLOGY:",
         "  1. Schema first. Run @orient before writing any query.",
         "  2. SQL for 'when/how much', vec_ops for 'what about'. Don't embed-search what SQL can answer.",
-        "  3. Vanilla for precision, diverse for discovery. Start with raw cosine (no tokens) — add diverse only when you need to spread across subtopics.",
+        "  3. Raw cosine by default. Add a token to modulate the embedding landscape.",
         "  4. type='user_prompt' = intent/decisions. type='assistant' = analysis. type='tool_call' = actions. Pre-filter by type when you want to slice by who said/did something.",
         "  5. Pivot semantic → structural. vec_ops finds the neighborhood, graph columns navigate it.",
         "  6. Escalate specificity. COUNT(*) → GROUP BY → vec_ops on the interesting cluster.",
@@ -449,6 +447,8 @@ def build_instructions() -> str:
         "  8. ID prefix as date. WHERE v.id LIKE '260207%' — chunk IDs encode YYMMDD creation date.",
         "",
         "PRESETS: pass @name as query parameter. Run @orient to discover all presets per cell.",
+        "",
+        "**ALWAYS START WITH: query=\"@orient\" for cell schema, columns, presets, and graph intelligence.**",
         "",
     ])
     return "\n".join(parts)
