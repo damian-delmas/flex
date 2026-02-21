@@ -26,7 +26,11 @@ from datetime import datetime
 from flex.registry import resolve_cell, FLEX_HOME
 from flex.onnx.embed import get_model, encode
 from flex.modules.claude_code.compile.soft_detect import detect_file_ops
-from flex.modules.docpac.compile.worker import process_queue as docpac_process_queue
+# Docpac module — optional, graceful degradation when absent
+try:
+    from flex.modules.docpac.compile.worker import process_queue as docpac_process_queue
+except ImportError:
+    docpac_process_queue = None
 
 # SOMA identity module — optional, graceful degradation when absent
 try:
@@ -865,13 +869,14 @@ def daemon_loop(interval=2):
             print(f"[worker] Error: {e}", file=sys.stderr)
 
         # Drain docpac pending queue (same embedder, different cell connections)
-        try:
-            dp_stats = docpac_process_queue(encode)
-            if dp_stats['indexed'] > 0:
-                print(f"[docpac] indexed={dp_stats['indexed']} skipped={dp_stats['skipped']}",
-                      file=sys.stderr)
-        except Exception as e:
-            print(f"[docpac] Error: {e}", file=sys.stderr)
+        if docpac_process_queue:
+            try:
+                dp_stats = docpac_process_queue(encode)
+                if dp_stats['indexed'] > 0:
+                    print(f"[docpac] indexed={dp_stats['indexed']} skipped={dp_stats['skipped']}",
+                          file=sys.stderr)
+            except Exception as e:
+                print(f"[docpac] Error: {e}", file=sys.stderr)
 
         # Periodic backfill + heal — catch anything hooks missed (24h cycle)
         if time.time() - last_backfill > BACKFILL_INTERVAL:

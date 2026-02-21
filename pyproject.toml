@@ -1,6 +1,6 @@
 [project]
 name = "getflex"
-version = "0.1.0"
+version = "0.1.2"
 description = "SQLite knowledge engine for AI Agents"
 requires-python = ">=3.12"
 dependencies = [
@@ -23,8 +23,6 @@ flex = [
     "modules/claude_code/compile/hooks/*.sh",
     "data/hooks/*.sh",
     "data/systemd/*.tmpl",
-    "onnx/model.onnx",
-    "onnx/model.onnx.data",
     "onnx/*.json",
     "onnx/vocab.txt",
 ]

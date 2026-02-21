@@ -657,16 +657,13 @@ async def handle_call_tool(
         force = True
         query = query[1:].lstrip()
 
-    # Presets are exempt from gate (multi-query results, expected to be large)
-    is_preset = query.lstrip().startswith('@')
-
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, _execute_cell_query, cell, query)
 
     # Token estimate header + gate
     row_count, est_tokens, header = _token_header(result)
 
-    if not force and not is_preset and est_tokens > _GATE_TOKEN_LIMIT:
+    if not force and est_tokens > _GATE_TOKEN_LIMIT:
         gated = _gate_response(result, header, row_count, est_tokens)
         return [types.TextContent(type="text", text=gated)]
 
