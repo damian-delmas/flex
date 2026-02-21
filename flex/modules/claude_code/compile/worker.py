@@ -260,7 +260,8 @@ def _ensure_core_tables(conn: sqlite3.Connection):
             chunk_id TEXT,
             child_doc_id TEXT,
             agent_type TEXT,
-            created_at INTEGER
+            created_at INTEGER,
+            parent_source_id TEXT
         );
 
         CREATE TABLE IF NOT EXISTS _edges_soft_ops (
@@ -628,7 +629,7 @@ def sync_session_messages(session_id: str, conn: sqlite3.Connection) -> int:
                         agent_match = re.search(r'agentId: ([a-f0-9]+)', raw)
                         if agent_match:
                             spawned = f"agent-{agent_match.group(1)}"
-                            delegation_items.append((chunk_id, spawned, ts_int))
+                            delegation_items.append((chunk_id, spawned, ts_int, session_id))
 
         # --- Build chunk content ---
         text_content = '\n'.join(text_parts) if text_parts else None
@@ -728,14 +729,14 @@ def sync_session_messages(session_id: str, conn: sqlite3.Connection) -> int:
                 print(f"[worker] SOMA insert error: {e}", file=sys.stderr)
 
     # --- Write delegation edges ---
-    for chunk_id, spawned_agent, ts in delegation_items:
+    for chunk_id, spawned_agent, ts, parent_sid in delegation_items:
         try:
             ensure_source_exists(conn, spawned_agent)
             cur.execute("""
                 INSERT OR IGNORE INTO _edges_delegations
-                (chunk_id, child_doc_id, agent_type, created_at)
-                VALUES (?, ?, NULL, ?)
-            """, (chunk_id, spawned_agent, ts))
+                (chunk_id, child_doc_id, agent_type, created_at, parent_source_id)
+                VALUES (?, ?, NULL, ?, ?)
+            """, (chunk_id, spawned_agent, ts, parent_sid))
         except Exception as e:
             print(f"[worker] Delegation insert error: {e}", file=sys.stderr)
 

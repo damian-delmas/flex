@@ -36,6 +36,4 @@ SELECT
     d.child_doc_id as child_session,
     d.agent_type
 FROM _edges_delegations d
-JOIN _raw_chunks c ON d.chunk_id = c.id
-JOIN _edges_source e ON c.id = e.chunk_id
-WHERE e.source_id LIKE '%' || :session || '%'
+WHERE COALESCE(d.parent_source_id, substr(d.chunk_id, 1, 36)) LIKE '%' || :session || '%'

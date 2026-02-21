@@ -35,7 +35,6 @@ ORDER BY touches DESC LIMIT 15;
 -- @query: delegations
 SELECT d.agent_type, COUNT(*) as spawned
 FROM _edges_delegations d
-JOIN _raw_chunks c ON d.chunk_id = c.id
-WHERE c.timestamp > strftime('%s', 'now', '-' || :days || ' days')
+WHERE d.created_at > strftime('%s', 'now', '-' || :days || ' days')
 GROUP BY d.agent_type
 ORDER BY spawned DESC;

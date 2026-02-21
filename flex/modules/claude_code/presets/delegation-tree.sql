@@ -8,8 +8,7 @@ WITH RECURSIVE tree AS (
         d.agent_type,
         1 as depth
     FROM _edges_delegations d
-    JOIN _edges_source e ON d.chunk_id = e.chunk_id
-    WHERE e.source_id LIKE '%' || :session || '%'
+    WHERE COALESCE(d.parent_source_id, substr(d.chunk_id, 1, 36)) LIKE '%' || :session || '%'
 
     UNION ALL
 
@@ -18,8 +17,7 @@ WITH RECURSIVE tree AS (
         d2.agent_type,
         t.depth + 1
     FROM _edges_delegations d2
-    JOIN _edges_source e2 ON d2.chunk_id = e2.chunk_id
-    JOIN tree t ON e2.source_id = t.child_doc_id
+    JOIN tree t ON COALESCE(d2.parent_source_id, substr(d2.chunk_id, 1, 36)) = t.child_doc_id
     WHERE t.depth < 5
 )
 SELECT child_doc_id as session, agent_type, depth

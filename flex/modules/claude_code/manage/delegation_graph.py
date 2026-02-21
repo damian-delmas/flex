@@ -28,9 +28,10 @@ def build_delegation_graph(db):
     Returns networkx.DiGraph.
     """
     rows = db.execute("""
-        SELECT DISTINCT es.source_id as parent, d.child_doc_id as child
+        SELECT DISTINCT
+            COALESCE(d.parent_source_id, substr(d.chunk_id, 1, 36)) as parent,
+            d.child_doc_id as child
         FROM _edges_delegations d
-        JOIN _edges_source es ON d.chunk_id = es.chunk_id
         WHERE d.child_doc_id IS NOT NULL
     """).fetchall()
 
