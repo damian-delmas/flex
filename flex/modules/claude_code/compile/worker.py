@@ -328,6 +328,37 @@ def _ensure_content_tables(conn: sqlite3.Connection):
             PRIMARY KEY (chunk_id, content_hash)
         )
     """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_edges_raw_content_hash
+        ON _edges_raw_content(content_hash)
+    """)
+    conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS content_fts USING fts5(
+            content,
+            content='_raw_content',
+            content_rowid='rowid'
+        )
+    """)
+    has_trigger = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='raw_content_ai'"
+    ).fetchone()
+    if not has_trigger:
+        conn.executescript("""
+            CREATE TRIGGER raw_content_ai AFTER INSERT ON _raw_content BEGIN
+                INSERT INTO content_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
+            CREATE TRIGGER raw_content_ad AFTER DELETE ON _raw_content BEGIN
+                INSERT INTO content_fts(content_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+            END;
+            CREATE TRIGGER raw_content_au AFTER UPDATE ON _raw_content BEGIN
+                INSERT INTO content_fts(content_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+                INSERT INTO content_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
+        """)
+        # Backfill existing rows into FTS index
+        rc_count = conn.execute("SELECT COUNT(*) FROM _raw_content").fetchone()[0]
+        if rc_count > 0:
+            conn.execute("INSERT INTO content_fts(content_fts) VALUES('rebuild')")
 
 
 
