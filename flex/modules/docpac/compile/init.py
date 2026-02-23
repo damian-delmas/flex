@@ -425,7 +425,7 @@ def main():
     chunk_ids = [c['id'] for c in chunks]
     chunk_texts = [c['content'] for c in chunks]
 
-    embeddings = embedder.encode(chunk_texts, batch_size=32)
+    embeddings = embedder.encode(chunk_texts)
     print(f"Embedded {len(embeddings)} chunks ({embeddings.shape[1]}d)")
 
     for i, chunk_id in enumerate(chunk_ids):

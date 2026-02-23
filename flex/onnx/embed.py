@@ -4,6 +4,12 @@ ONNX-based embedding model.
 Drop-in replacement for sentence-transformers. Uses ONNX runtime.
 No PyTorch dependency. ~90MB instead of ~400MB.
 
+Performance:
+    Adaptive batching: sorts inputs by tokenized length so short texts batch
+    together (fast, low padding) and long texts batch together (predictable).
+    Attention memory stays under 512MB at any input mix. Results returned in
+    original order.
+
 Usage:
     from flex.onnx import ONNXEmbedder
 
@@ -20,6 +26,22 @@ _tokenizer = None
 
 ONNX_DIR = Path(__file__).parent
 _USER_MODELS = Path.home() / ".flex" / "models"
+
+# Attention memory budget: batch × heads × seq² × 4 bytes ≤ ATTN_BUDGET_BYTES
+# 512MB keeps us safe on 8GB machines with headroom for hidden states + OS.
+ATTN_BUDGET_BYTES = 512 * 1024 * 1024
+ATTN_HEADS = 12
+MAX_BATCH = 256
+MAX_LENGTH = 256
+MAX_CHARS = MAX_LENGTH * 8  # pre-truncate before tokenizer sees the text
+
+
+def _safe_batch_size(seq_len: int) -> int:
+    """Max batch size that keeps attention intermediates under budget."""
+    if seq_len <= 0:
+        return MAX_BATCH
+    max_bs = ATTN_BUDGET_BYTES // (ATTN_HEADS * seq_len * seq_len * 4)
+    return max(1, min(max_bs, MAX_BATCH))
 
 
 def _resolve_model_path() -> Path:
@@ -66,8 +88,17 @@ class ONNXEmbedder:
     def session(self):
         if self._session is None:
             ort = _get_onnxruntime()
+            opts = ort.SessionOptions()
+            # ORT_ENABLE_ALL: fuses QKV attention, layer norm, GELU, embedding
+            # layers into single kernels. 2-5x speedup on transformers.
+            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            # intra_op=0 lets ONNX use all physical cores (default heuristic).
+            # inter_op=1 because we run one model sequentially.
+            opts.intra_op_num_threads = 0
+            opts.inter_op_num_threads = 1
             self._session = ort.InferenceSession(
                 str(self.model_path),
+                sess_options=opts,
                 providers=["CPUExecutionProvider"]
             )
         return self._session
@@ -78,6 +109,34 @@ class ONNXEmbedder:
             self._tokenizer = _get_tokenizer()
         return self._tokenizer
 
+    def _encode_batch(self, batch: list, normalize: bool) -> np.ndarray:
+        """Tokenize and run inference on a single pre-sorted batch."""
+        tok = self.tokenizer
+        encoded = tok.encode_batch(batch)
+        input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
+        attention_mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
+
+        outputs = self.session.run(
+            None,
+            {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+            }
+        )
+
+        # Mean pooling
+        last_hidden = outputs[0]
+        mask_expanded = np.expand_dims(attention_mask, -1).astype(np.float32)
+        sum_embeddings = np.sum(last_hidden * mask_expanded, axis=1)
+        sum_mask = np.sum(mask_expanded, axis=1)
+        embeddings = sum_embeddings / np.maximum(sum_mask, 1e-9)
+
+        if normalize:
+            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+            embeddings = embeddings / np.maximum(norms, 1e-9)
+
+        return embeddings
+
     def encode(
         self,
         sentences: Union[str, List[str]],
@@ -86,11 +145,16 @@ class ONNXEmbedder:
         show_progress_bar: bool = False,  # noqa: ARG002 — sentence-transformers API compat
     ) -> np.ndarray:
         """
-        Encode sentences to embeddings.
+        Encode sentences to embeddings with adaptive batching.
+
+        Sorts inputs by tokenized length so short texts batch together (fast)
+        and long texts batch together (predictable padding). Attention memory
+        stays under 512MB at any input mix. Results returned in original order.
 
         Args:
             sentences: Single sentence or list of sentences
-            batch_size: Batch size for encoding
+            batch_size: Max batch size hint (actual size may be smaller for long
+                        texts based on memory budget)
             normalize: Whether to L2-normalize embeddings
             show_progress_bar: Ignored. Exists for sentence-transformers API compatibility.
 
@@ -100,42 +164,42 @@ class ONNXEmbedder:
         if isinstance(sentences, str):
             sentences = [sentences]
 
-        all_embeddings = []
+        # Pre-truncate: no point tokenizing 50K-char tool outputs to keep 256 tokens
+        sentences = [s[:MAX_CHARS] for s in sentences]
+
+        n = len(sentences)
+        if n == 0:
+            return np.empty((0, 384), dtype=np.float32)
+
         tok = self.tokenizer
-        tok.enable_truncation(max_length=256)
+        tok.enable_truncation(max_length=MAX_LENGTH)
         tok.enable_padding()
 
-        for i in range(0, len(sentences), batch_size):
-            batch = sentences[i:i + batch_size]
+        # Tokenize all to get lengths for sorting + adaptive batch sizing
+        pre_encoded = tok.encode_batch(sentences)
+        lengths = [len(e.ids) for e in pre_encoded]
 
-            # Tokenize
-            encoded = tok.encode_batch(batch)
-            input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
-            attention_mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
+        # Sort by length: short texts first, long texts last
+        order = np.argsort(lengths)
+        sorted_sentences = [sentences[i] for i in order]
+        sorted_lengths = [lengths[i] for i in order]
 
-            # Run ONNX inference
-            outputs = self.session.run(
-                None,
-                {
-                    "input_ids": input_ids,
-                    "attention_mask": attention_mask,
-                }
-            )
+        all_embeddings = []
+        i = 0
+        while i < n:
+            # Adaptive batch size bounded by longest text in this slice
+            max_seq = sorted_lengths[min(i + batch_size - 1, n - 1)]
+            safe_bs = min(batch_size, _safe_batch_size(max_seq))
+            end = min(i + safe_bs, n)
+            all_embeddings.append(self._encode_batch(sorted_sentences[i:end], normalize))
+            i = end
 
-            # Mean pooling
-            last_hidden = outputs[0]
-            mask_expanded = np.expand_dims(attention_mask, -1).astype(np.float32)
-            sum_embeddings = np.sum(last_hidden * mask_expanded, axis=1)
-            sum_mask = np.sum(mask_expanded, axis=1)
-            embeddings = sum_embeddings / np.maximum(sum_mask, 1e-9)
+        stacked = np.vstack(all_embeddings)
 
-            if normalize:
-                norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-                embeddings = embeddings / np.maximum(norms, 1e-9)
-
-            all_embeddings.append(embeddings)
-
-        return np.vstack(all_embeddings)
+        # Unsort back to original order
+        result = np.empty_like(stacked)
+        result[order] = stacked
+        return result
 
 
 # Singleton
