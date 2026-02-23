@@ -14,6 +14,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 FLEX_HOME = Path(os.environ.get("FLEX_HOME", Path.home() / ".flex"))
@@ -122,6 +123,20 @@ def _install_systemd():
         print("         macOS launchd support coming in v0.1")
         return False
 
+    # Check systemctl is available and functional before writing unit files
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "--no-pager", "status"],
+            capture_output=True, timeout=5,
+        )
+        # Exit codes 0-3 are all "systemctl worked" (3 = no units, still available)
+        if result.returncode > 3:
+            raise subprocess.CalledProcessError(result.returncode, "systemctl")
+    except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        print("  [skip] systemd not available (container or non-systemd Linux)")
+        print("         Start worker manually: python -m flex.modules.claude_code.compile.worker --daemon")
+        return False
+
     SYSTEMD_DIR.mkdir(parents=True, exist_ok=True)
     python = sys.executable
 
@@ -157,7 +172,11 @@ def _patch_claude_json():
 
 
 def _run_enrichment(conn):
-    """Run post-backfill enrichment pipeline."""
+    """Run post-backfill enrichment pipeline.
+
+    Each phase is independent — a failure in graph building does not prevent
+    presets and views from being installed (which are required for @orient).
+    """
     import time as _time
     t0 = _time.time()
 
@@ -169,39 +188,57 @@ def _run_enrichment(conn):
         from flex.modules.claude_code.manage.enrich_repo_project import run as run_repo_project
         from flex.views import regenerate_views, install_views
         from flex.utils.install_presets import install_cell as install_presets_cell
+    except ImportError as e:
+        print(f"  [skip] enrichment unavailable: {e}")
+        return
 
-        print("  Enriching...")
+    print("  Enriching...")
 
-        rebuild_warmup_types(conn)
-        reembed_sources(conn)
-        rebuild_source_graph(conn)
-        print("  [ok] graph built")
+    # Phase 1: Graph enrichments — each step independent
+    for step, fn, label in [
+        ("warmup",  lambda: rebuild_warmup_types(conn),     "warmup detection"),
+        ("reembed", lambda: reembed_sources(conn),          "source pooling"),
+        ("graph",   lambda: rebuild_source_graph(conn),     "graph built"),
+    ]:
+        try:
+            fn()
+            print(f"  [ok] {label}")
+        except Exception as e:
+            print(f"  [warn] {label} skipped: {e}")
 
+    # Phase 2: Session fingerprints
+    try:
         n_fp = run_fingerprints(conn)
         print(f"  [ok] {n_fp} sessions fingerprinted")
+    except Exception as e:
+        print(f"  [warn] fingerprints skipped: {e}")
 
+    # Phase 3: Repo attribution
+    try:
         n_rp = run_repo_project(conn)
         print(f"  [ok] {n_rp} sources attributed")
+    except Exception as e:
+        print(f"  [warn] repo attribution skipped: {e}")
 
+    # Phase 4: Presets + views — always runs, required for @orient
+    try:
         install_presets_cell('claude_code')
         print("  [ok] presets installed")
+    except Exception as e:
+        print(f"  [warn] presets install failed: {e}")
 
-        # Curated views
+    try:
         view_dir = _find_view_dir('claude_code', 'claude-code')
         if view_dir:
             install_views(conn, view_dir)
             print("  [ok] curated views installed")
-
         regenerate_views(conn)
         conn.commit()
         print("  [ok] views generated")
-
-        print(f"  [ok] enrichment done in {_time.time()-t0:.0f}s")
-
-    except ImportError as e:
-        print(f"  [skip] enrichment unavailable: {e}")
     except Exception as e:
-        print(f"  [warn] enrichment error: {e}")
+        print(f"  [warn] views install failed: {e}")
+
+    print(f"  [ok] enrichment done in {_time.time()-t0:.0f}s")
 
 
 def cmd_init(args):
@@ -265,15 +302,44 @@ def cmd_init(args):
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=30000")
 
+        # Live progress display — background thread repaints every 250ms so
+        # the elapsed counter and spinner keep moving during slow embeds.
+        import threading
+
+        _state = {"i": 0, "sessions": 0, "chunks": 0, "done": False}
+        _t0 = time.time()
+        _spinner = "|/-\\"
+
+        def _ticker():
+            tick = 0
+            while not _state["done"]:
+                elapsed = time.time() - _t0
+                i, total_ = _state["i"], len(jsonls)
+                pct = i / total_ * 100 if total_ else 0
+                spin = _spinner[tick % 4]
+                sys.stdout.write(
+                    f"\r  {spin} {i}/{total_} ({pct:.0f}%)  "
+                    f"{_state['sessions']:,} sessions  "
+                    f"{_state['chunks']:,} chunks  "
+                    f"{elapsed:.0f}s      "
+                )
+                sys.stdout.flush()
+                tick += 1
+                time.sleep(0.25)
+
+        _thread = threading.Thread(target=_ticker, daemon=True)
+        _thread.start()
+
         def _progress(i, total, sessions, chunks, elapsed):
-            sys.stdout.write(
-                f"\r  Indexing... {i}/{total} files "
-                f"({sessions} sessions, {chunks:,} chunks) [{elapsed:.0f}s]"
-            )
-            sys.stdout.flush()
+            _state["i"] = i
+            _state["sessions"] = sessions
+            _state["chunks"] = chunks
 
         stats = initial_backfill(conn, progress_cb=_progress)
-        print()  # newline after \r
+        _state["done"] = True
+        _thread.join()
+        sys.stdout.write("\r" + " " * 72 + "\r")  # clear line
+        sys.stdout.flush()
         print(
             f"  [ok] indexed {stats['sessions']} sessions, "
             f"{stats['chunks']:,} chunks in {stats['elapsed']:.0f}s"
