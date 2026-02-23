@@ -125,7 +125,9 @@ def _register_udf(db: sqlite3.Connection, state: dict):
         embedder = _get_embedder()
         if embedder:
             embed_query = lambda text: embedder.encode(text, prefix='search_query: ')
-            register_vec_ops(db, state['caches'], embed_query, state['config'])
+            embed_doc   = lambda text: embedder.encode(text, prefix='search_document: ')
+            register_vec_ops(db, state['caches'], embed_query, state['config'],
+                             embed_doc_fn=embed_doc)
     except ImportError:
         pass
 

@@ -217,7 +217,7 @@ class VectorCache:
                mask: np.ndarray = None, threshold: float = 0.0,
                mmr_lambda: float = 0.7,
                modifiers: dict = None, config: dict = None,
-               embed_fn=None) -> List[Dict[str, Any]]:
+               embed_fn=None, embed_doc_fn=None) -> List[Dict[str, Any]]:
         """
         Search for similar vectors with optional landscape modulations.
 
@@ -235,7 +235,11 @@ class VectorCache:
             mmr_lambda: Relevance vs diversity tradeoff (0-1)
             modifiers: Parsed modifier dict from parse_modifiers()
             config: Cell config dict from _meta (vec:* keys)
-            embed_fn: Embedding function for unlike:TEXT and from:to: in modifiers
+            embed_fn: Embedding function for query-space text (unlike:TEXT, main query)
+            embed_doc_fn: Embedding function for document-space text (trajectory from:/to:).
+                          Falls back to embed_fn if not provided. Required for asymmetric
+                          models (e.g. Nomic) where trajectory direction must be computed
+                          in document space to match stored embeddings.
 
         Returns:
             List of {id, score} sorted by score desc
@@ -280,8 +284,12 @@ class VectorCache:
         traj_from = modifiers.get('trajectory_from') if modifiers else None
         traj_to = modifiers.get('trajectory_to') if modifiers else None
         if traj_from and traj_to and embed_fn:
-            start_vec = np.squeeze(embed_fn(traj_from)).astype(np.float32)
-            end_vec = np.squeeze(embed_fn(traj_to)).astype(np.float32)
+            # Direction must be in document space to match stored embeddings.
+            # Use embed_doc_fn if provided (asymmetric models like Nomic),
+            # else fall back to embed_fn (symmetric models like MiniLM).
+            _embed_for_traj = embed_doc_fn if embed_doc_fn is not None else embed_fn
+            start_vec = np.squeeze(_embed_for_traj(traj_from)).astype(np.float32)
+            end_vec = np.squeeze(_embed_for_traj(traj_to)).astype(np.float32)
             direction = end_vec - start_vec
             d_norm = np.linalg.norm(direction)
             if d_norm > 0:
@@ -618,7 +626,8 @@ def materialize_vec_ops(db, sql: str) -> str:
     return sql[:start.start()] + tmp_name + sql[end_pos:]
 
 
-def register_vec_ops(conn, caches: dict, embed_fn, cell_config: dict = None):
+def register_vec_ops(conn, caches: dict, embed_fn, cell_config: dict = None,
+                     embed_doc_fn=None):
     """Register vec_ops as a SQL-callable function with modifier support.
 
     Args:
@@ -702,6 +711,7 @@ def register_vec_ops(conn, caches: dict, embed_fn, cell_config: dict = None):
             modifiers=modifiers,
             config=cfg,
             embed_fn=embed_fn,
+            embed_doc_fn=embed_doc_fn,
             diverse=bool(modifiers.get('diverse')) if modifiers else False,
             limit=limit,
             oversample=min(limit * 3, cache.size),
