@@ -206,7 +206,8 @@ def persist(db: sqlite3.Connection, scores: dict,
             centrality REAL,
             is_hub INTEGER DEFAULT 0,
             is_bridge INTEGER DEFAULT 0,
-            community_id INTEGER
+            community_id INTEGER,
+            community_label TEXT
         )
     """)
 

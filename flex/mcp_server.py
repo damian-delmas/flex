@@ -486,6 +486,11 @@ def _build_tool_schema() -> dict:
                 "default": "claude_code",
                 "enum": cell_list if cell_list else ["claude_code"],
             },
+            "params": {
+                "type": "object",
+                "description": "Named parameters for preset queries (e.g. {\"days\": 7} for @digest)",
+                "additionalProperties": True,
+            },
         },
         "required": ["query"],
     }
@@ -672,6 +677,14 @@ async def handle_call_tool(
 
     query = arguments["query"]
     cell = arguments.get("cell", "claude_code")
+
+    # Merge external params dict into preset query string.
+    # execute_preset parses "key=value" tokens from the query string — serializing
+    # params here avoids threading a dict through the entire call stack.
+    params_arg = arguments.get("params") or {}
+    if params_arg and query.lstrip('!').startswith('@'):
+        param_str = ' '.join(f'{k}={v}' for k, v in params_arg.items())
+        query = f'{query} {param_str}'
 
     # ! prefix = force bypass gate
     force = False

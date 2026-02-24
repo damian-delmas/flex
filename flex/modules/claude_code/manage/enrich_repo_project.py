@@ -42,6 +42,7 @@ CREATE TABLE _enrich_repo_identity (
 
 from flex.utils.git import git_root_from_path as _git_root_from_path
 from flex.utils.git import project_from_git_root as _project_from_git_root
+from flex.modules.claude_code.manage.noise import infra_file_exclude_sql, infra_repo_exclude_sql
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -111,8 +112,13 @@ def backfill_from_soma_hash(db) -> int:
     """
     Primary: update project + git_root from SOMA repo_root hash.
     Joins _edges_repo_identity → _enrich_repo_identity. Most reliable signal.
+
+    Infrastructure repos (.nexus, .claude) are excluded from the vote — they
+    appear in nearly every session as injected reads and would otherwise win
+    the COUNT(*) vote for sessions with no other SOMA signal.
     """
-    result = db.execute("""
+    infra_excl = infra_repo_exclude_sql('eri.repo_path')
+    result = db.execute(f"""
         UPDATE _raw_sources
         SET
             project = (
@@ -122,6 +128,7 @@ def backfill_from_soma_hash(db) -> int:
                 JOIN _enrich_repo_identity eri ON edri.repo_root = eri.repo_root
                 WHERE es.source_id = _raw_sources.source_id
                   AND eri.project IS NOT NULL AND eri.project != ''
+                  AND {infra_excl}
                 GROUP BY edri.repo_root
                 ORDER BY COUNT(*) DESC
                 LIMIT 1
@@ -133,6 +140,7 @@ def backfill_from_soma_hash(db) -> int:
                 JOIN _enrich_repo_identity eri ON edri.repo_root = eri.repo_root
                 WHERE es.source_id = _raw_sources.source_id
                   AND eri.repo_path IS NOT NULL AND eri.repo_path != ''
+                  AND {infra_excl}
                 GROUP BY edri.repo_root
                 ORDER BY COUNT(*) DESC
                 LIMIT 1
@@ -144,6 +152,7 @@ def backfill_from_soma_hash(db) -> int:
             JOIN _enrich_repo_identity eri ON edri.repo_root = eri.repo_root
             WHERE es.source_id = _raw_sources.source_id
               AND eri.project IS NOT NULL AND eri.project != ''
+              AND {infra_excl}
         )
     """)
     return result.rowcount
@@ -208,7 +217,7 @@ def backfill_from_target_files(db, soma_map: dict) -> int:
     Vote on git roots across target_file paths. Git defines the boundary —
     no path convention parsing. Most common git root wins.
     """
-    rows = db.execute("""
+    rows = db.execute(f"""
         SELECT es.source_id, t.target_file, COUNT(*) as n
         FROM _raw_sources rs
         JOIN _edges_source es ON rs.source_id = es.source_id
@@ -216,6 +225,7 @@ def backfill_from_target_files(db, soma_map: dict) -> int:
         WHERE rs.git_root IS NULL
           AND (rs.primary_cwd IS NULL OR rs.primary_cwd = '')
           AND t.target_file IS NOT NULL AND t.target_file != ''
+          AND {infra_file_exclude_sql()}
         GROUP BY es.source_id, t.target_file
         ORDER BY es.source_id, n DESC
     """).fetchall()

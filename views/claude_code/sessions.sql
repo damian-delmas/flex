@@ -19,7 +19,8 @@ SELECT
     g.centrality,
     g.is_hub,
     g.is_bridge,
-    g.community_id
+    g.community_id,
+    g.community_label
 FROM _raw_sources src
 LEFT JOIN _edges_source s ON src.source_id = s.source_id
 LEFT JOIN _types_source_warmup w ON src.source_id = w.source_id

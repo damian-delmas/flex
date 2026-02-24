@@ -15,6 +15,11 @@ SKIP_PATH_PATTERNS = [
     r'\.git/',
     r'__pycache__',
     r'\.pyc$',
+    # Infrastructure paths that appear across virtually all sessions.
+    # Nexus knowledge injection and Claude Code hook scripts carry no project
+    # signal — indexing them pollutes project attribution and file graphs.
+    r'/\.nexus/',
+    r'/\.claude/hooks/',
 ]
 
 # Noisy bash commands to skip

@@ -78,6 +78,12 @@ def reembed_sources(db):
     to user_prompt + assistant captures human intent and agent reasoning —  the
     actual topical content. Tool calls, Read results, Edit diffs are structural
     and already captured in edge tables.
+
+    IDF-weighted pooling: each chunk is weighted by (1 - cosine(chunk, corpus_centroid)).
+    Chunks near the corpus centroid (boilerplate preambles, nexus injections, generic
+    greetings) get near-zero weight. Distinctive chunks dominate the pool. The corpus
+    centroid is computed once from existing source embeddings before the loop — it
+    approximates the average session direction in embedding space.
     """
     print("=" * 60)
     print("Step 0.5: Selective Source Pooling (prompt + response only)")
@@ -97,6 +103,21 @@ def reembed_sources(db):
         "SELECT COUNT(*) FROM _backup_source_embeddings_meanpool"
     ).fetchone()[0]
     print(f"  Backed up {backup_cnt} source embeddings")
+    sys.stdout.flush()
+
+    # Compute corpus centroid from existing source embeddings.
+    # Used to down-weight chunks that are close to the corpus mean (boilerplate).
+    centroid = None
+    src_rows = db.execute(
+        "SELECT embedding FROM _raw_sources WHERE embedding IS NOT NULL"
+    ).fetchall()
+    if src_rows:
+        src_vecs = np.array([np.frombuffer(r[0], dtype=np.float32) for r in src_rows])
+        centroid = src_vecs.mean(axis=0)
+        c_norm = np.linalg.norm(centroid)
+        if c_norm > 0:
+            centroid = centroid / c_norm
+    print(f"  Corpus centroid from {len(src_rows)} source embeddings")
     sys.stdout.flush()
 
     sources = db.execute("SELECT source_id FROM _raw_sources").fetchall()
@@ -119,7 +140,18 @@ def reembed_sources(db):
             continue
 
         vecs = np.array([np.frombuffer(r[0], dtype=np.float32) for r in rows])
-        new_emb = vecs.mean(axis=0)
+
+        if centroid is not None and len(vecs) > 1:
+            # Weight = 1 - cosine(chunk, corpus_centroid).
+            # Chunks near the centroid (common boilerplate) → weight ≈ 0.
+            # Distinctive chunks → weight ≈ 2. Falls on a concave curve.
+            # Clip to [0.05, 2.0] so no chunk is completely silenced.
+            cosines = vecs @ centroid          # (N,) — already normalized vecs
+            weights = np.clip(1.0 - cosines, 0.05, 2.0)
+            new_emb = (vecs * weights[:, None]).sum(axis=0) / weights.sum()
+        else:
+            new_emb = vecs.mean(axis=0)
+
         norm = np.linalg.norm(new_emb)
         if norm > 0:
             new_emb = new_emb / norm
@@ -190,6 +222,167 @@ def rebuild_source_graph(db):
     comms = db.execute('SELECT COUNT(DISTINCT community_id) FROM _enrich_source_graph WHERE community_id IS NOT NULL').fetchone()[0]
     print(f'\nAFTER: {new_cnt} rows, {new_hubs} hubs, {comms} communities')
     print(f'Source graph total: {t3-t0:.1f}s\n')
+    sys.stdout.flush()
+
+
+_LABEL_STOPWORDS = {
+    # common English
+    'the', 'and', 'for', 'with', 'that', 'this', 'from', 'have', 'are',
+    'was', 'were', 'been', 'will', 'would', 'could', 'should', 'into',
+    'also', 'just', 'back', 'next', 'step', 'done', 'good', 'here',
+    'then', 'when', 'what', 'which', 'they', 'their', 'some', 'all',
+    'not', 'now', 'can', 'get', 'let', 'use', 'make', 'run', 'add',
+    'each', 'only', 'want', 'need', 'keep', 'like', 'used', 'more',
+    'than', 'both', 'well', 'most', 'over', 'after', 'before', 'very',
+    'these', 'where', 'your', 'there', 'here', 'been', 'using',
+    # tool names (structural fingerprint noise)
+    'read', 'edit', 'bash', 'write', 'task', 'grep', 'glob', 'search',
+    'fetch', 'create', 'delete', 'update', 'select', 'insert',
+    # universal flex-domain words (appear in every session, carry no signal)
+    'flex', 'flexsearch', 'query', 'session', 'sessions',
+    'chunk', 'chunks', 'source', 'sources', 'view', 'views',
+    'column', 'columns', 'cell', 'cells', 'agent', 'agents',
+    'claude', 'data', 'code', 'file', 'files', 'table', 'tables',
+    'result', 'results', 'model', 'value', 'index', 'build',
+
+    # SQL / Python keywords
+    'null', 'true', 'false', 'none', 'self', 'return', 'print',
+    'list', 'dict', 'import', 'from', 'class', 'pass', 'else',
+}
+
+
+def _extract_community_keywords(texts, n=4, extra_stopwords=None):
+    """Top N keywords from a list of fingerprint texts via token frequency.
+
+    Targets quoted content in fingerprints (the high-signal lines) rather
+    than structural lines like "> [2-8] 4x op:Read".
+
+    extra_stopwords: additional tokens to suppress (e.g. path components,
+                     dominant project name to avoid duplication).
+    """
+    import re
+    from collections import Counter
+
+    stopwords = _LABEL_STOPWORDS | (extra_stopwords or set())
+    counter = Counter()
+    for text in texts:
+        if not text:
+            continue
+        # Quoted strings in fingerprints are the content-rich lines.
+        # Skip quoted strings that are file paths (start with /).
+        quoted = [q for q in re.findall(r'"([^"]{10,300})"', text)
+                  if not q.strip().startswith('/')]
+        source = ' '.join(quoted) if quoted else text
+        # 4+ char lowercase words only
+        for tok in re.findall(r'\b[a-z]{4,}\b', source.lower()):
+            if tok not in stopwords:
+                counter[tok] += 1
+    return [w for w, _ in counter.most_common(n)]
+
+
+def rebuild_community_labels(db):
+    """Label each community by keyword extraction from its hub fingerprints.
+
+    Reads the top 5 hub session fingerprints per community, extracts dominant
+    keywords, and writes a human-readable label to _enrich_source_graph.community_label.
+    Labels survive as long as community membership is stable — they're overwritten
+    on every rebuild_all run, so they always reflect the current graph topology.
+    """
+    print("=" * 60)
+    print("Step 1.5: Community Labeling")
+    print("=" * 60)
+    sys.stdout.flush()
+
+    t0 = time.time()
+
+    # Add column if this is an existing cell that predates community_label
+    try:
+        db.execute("ALTER TABLE _enrich_source_graph ADD COLUMN community_label TEXT")
+        db.commit()
+    except Exception:
+        pass  # column already exists
+
+    from collections import defaultdict
+
+    # Dominant project per community — top non-dot project among hub sessions.
+    # Dot-projects (.nexus, .claude) are structural infrastructure that appears
+    # in almost every session; they carry no topical signal.
+    project_rows = db.execute("""
+        SELECT g.community_id, rs.project, COUNT(*) as n
+        FROM _enrich_source_graph g
+        JOIN _raw_sources rs ON g.source_id = rs.source_id
+        WHERE g.community_id IS NOT NULL
+          AND g.is_hub = 1
+          AND rs.project IS NOT NULL
+          AND rs.project NOT LIKE '.%'
+        GROUP BY g.community_id, rs.project
+        ORDER BY g.community_id, n DESC
+    """).fetchall()
+
+    dominant_project = {}
+    for community_id, project, _ in project_rows:
+        if community_id not in dominant_project:
+            dominant_project[community_id] = project
+
+    # Top 5 hub fingerprints per community for keyword extraction
+    fp_rows = db.execute("""
+        SELECT g.community_id, ess.fingerprint_index
+        FROM _enrich_source_graph g
+        JOIN _enrich_session_summary ess ON g.source_id = ess.source_id
+        WHERE g.community_id IS NOT NULL
+          AND g.is_hub = 1
+          AND ess.fingerprint_index IS NOT NULL
+        ORDER BY g.community_id, g.centrality DESC
+    """).fetchall()
+
+    community_texts = defaultdict(list)
+    for community_id, fingerprint in fp_rows:
+        if len(community_texts[community_id]) < 5:
+            community_texts[community_id].append(fingerprint)
+
+    # Derive path-component noise dynamically from repo paths in this cell.
+    # Avoids hardcoding user-specific tokens (username, dir names).
+    path_stopwords = set()
+    try:
+        repo_rows = db.execute(
+            "SELECT repo_path FROM _enrich_repo_identity WHERE repo_path IS NOT NULL"
+        ).fetchall()
+        for (path,) in repo_rows:
+            for part in path.strip('/').split('/'):
+                if len(part) >= 3:
+                    path_stopwords.add(part.lower())
+    except Exception:
+        pass
+
+    all_communities = set(dominant_project) | set(community_texts)
+
+    labeled = 0
+    for community_id in all_communities:
+        parts = []
+        proj = dominant_project.get(community_id)
+        if proj:
+            parts.append(proj)
+
+        # Suppress path noise + project name from keywords to avoid duplication
+        extra_stop = path_stopwords | ({proj.lower()} if proj else set())
+        keywords = _extract_community_keywords(
+            community_texts.get(community_id, []),
+            n=3,
+            extra_stopwords=extra_stop,
+        )
+        parts.extend(keywords)
+        if parts:
+            label = ' · '.join(parts[:4])
+            db.execute(
+                "UPDATE _enrich_source_graph SET community_label = ? WHERE community_id = ?",
+                (label, community_id)
+            )
+            labeled += 1
+
+    db.commit()
+    log_op(db, 'rebuild_community_labels', '_enrich_source_graph',
+           rows_affected=labeled, source='rebuild_all.py')
+    print(f'  {labeled} communities labeled in {time.time()-t0:.1f}s\n')
     sys.stdout.flush()
 
 
@@ -294,6 +487,7 @@ def rebuild_fingerprints(db):
 def rebuild_repo_project(db):
     """Rebuild repo project attribution (incremental — NULL project only)."""
     from flex.modules.claude_code.manage.enrich_repo_project import run as run_repo_project
+    from flex.modules.claude_code.manage.noise import INFRA_REPO_PATH_PATTERNS
 
     print("=" * 60)
     print("Step 4: Repo Project Attribution (SOMA-first)")
@@ -301,6 +495,22 @@ def rebuild_repo_project(db):
     sys.stdout.flush()
 
     t0 = time.time()
+
+    # Reset sessions misattributed to infrastructure repos so they get
+    # re-evaluated by the full tier stack. These were typically old sessions
+    # where .nexus/.claude reads won the SOMA vote over the real project.
+    infra_like = ' OR '.join(
+        f"git_root LIKE '%{p}%'" for p in INFRA_REPO_PATH_PATTERNS
+    )
+    reset_count = db.execute(f"""
+        UPDATE _raw_sources SET project = NULL, git_root = NULL
+        WHERE ({infra_like})
+    """).rowcount
+    if reset_count:
+        db.commit()
+        print(f'  Reset {reset_count} infra-attributed sessions for re-attribution')
+        sys.stdout.flush()
+
     updated = run_repo_project(db)
     elapsed = time.time() - t0
     print(f'  {updated} sources attributed in {elapsed:.1f}s\n')
@@ -316,6 +526,7 @@ def main():
     rebuild_warmup_types(db)
     reembed_sources(db)
     rebuild_source_graph(db)
+    rebuild_community_labels(db)
     rebuild_file_graph(db)
     rebuild_delegation_graph(db)
     rebuild_fingerprints(db)

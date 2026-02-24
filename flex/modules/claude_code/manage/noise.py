@@ -21,6 +21,43 @@ ORCHESTRATOR_THRESHOLD = 5
 # File graph: skip files touched by too many sessions (noise like .gitignore)
 MAX_SESSIONS_PER_FILE = 200
 
+# Infrastructure paths that appear across virtually all sessions.
+# These carry no project signal — they pollute project attribution votes,
+# file co-edit graphs, and source embedding pooling.
+INFRA_PATH_PATTERNS = [
+    '/.nexus/',        # nexus knowledge injection (reads every session)
+    '/.claude/hooks/', # Claude Code hook scripts
+]
+
+# Repo-level equivalents for _enrich_repo_identity.repo_path comparisons.
+# No trailing slash — repo paths are directory roots.
+INFRA_REPO_PATH_PATTERNS = [
+    '/.nexus',
+    '/.claude',
+]
+
+
+def infra_repo_exclude_sql(col='eri.repo_path'):
+    """SQL AND-fragment to exclude infrastructure repo paths from attribution queries.
+
+    Usage — append to WHERE clauses joining _enrich_repo_identity:
+        WHERE eri.project IS NOT NULL
+          AND {infra_repo_exclude_sql()}
+    """
+    clauses = [f"{col} NOT LIKE '%{p}%'" for p in INFRA_REPO_PATH_PATTERNS]
+    return ' AND '.join(clauses)
+
+
+def infra_file_exclude_sql(col='t.target_file'):
+    """SQL AND-fragment to exclude infrastructure file paths from tool_op queries.
+
+    Usage — append to any WHERE clause joining _edges_tool_ops:
+        WHERE rs.git_root IS NULL
+          AND {infra_file_exclude_sql()}
+    """
+    clauses = [f"{col} NOT LIKE '%{p}%'" for p in INFRA_PATH_PATTERNS]
+    return ' AND '.join(clauses)
+
 
 def session_filter_sql():
     """WHERE clause for eligible sessions (summary, profile enrichments).
