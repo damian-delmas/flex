@@ -130,14 +130,11 @@ class ONNXEmbedder:
         input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
         attention_mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
 
-        outputs = self.session.run(
-            None,
-            {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "token_type_ids": np.zeros_like(input_ids),
-            }
-        )
+        feed = {"input_ids": input_ids, "attention_mask": attention_mask}
+        # token_type_ids is optional — only send if the model expects it
+        if any(i.name == "token_type_ids" for i in self.session.get_inputs()):
+            feed["token_type_ids"] = np.zeros_like(input_ids)
+        outputs = self.session.run(None, feed)
 
         # Mean pooling
         last_hidden = outputs[0]
