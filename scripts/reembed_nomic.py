@@ -156,27 +156,42 @@ def reembed_chunks_parallel(db_path: str, num_workers: int, batch_size: int, cel
 
 
 def reembed_chunks(db: sqlite3.Connection, embedder, batch_size: int, cell_name: str, max_cpu: int = 0):
-    """Re-embed _raw_chunks incrementally (single-process). Commits after each batch."""
+    """Re-embed _raw_chunks (single-process).
+
+    Pre-fetches all stale IDs once (avoids full-table scan per batch).
+    Uses synchronous=OFF for duration — safe for migration, resumable on crash.
+    """
     total = count_remaining(db, '_raw_chunks', 'id')
     if total == 0:
         print(f"  [{cell_name}] chunks: all {TARGET_DIM}d already")
         return
 
     print(f"  [{cell_name}] chunks: {total:,} to re-embed")
+
+    # Pre-fetch all stale IDs — one scan, no per-batch full table scan
+    stale_ids = [r[0] for r in db.execute(f"""
+        SELECT id FROM _raw_chunks
+        WHERE content IS NOT NULL
+          AND (embedding IS NULL OR length(embedding) != ?)
+        ORDER BY id
+    """, (EMBED_BYTES,)).fetchall()]
+
+    # synchronous=OFF: skip fsync per commit — safe for migration (resumable on crash)
+    db.execute("PRAGMA synchronous=OFF")
+
     done = 0
     t0 = time.time()
 
-    while True:
-        rows = db.execute(f"""
-            SELECT id, content FROM _raw_chunks
-            WHERE content IS NOT NULL
-              AND (embedding IS NULL OR length(embedding) != ?)
-            ORDER BY length(content), id
-            LIMIT ?
-        """, (EMBED_BYTES, batch_size)).fetchall()
+    for i in range(0, len(stale_ids), batch_size):
+        batch_ids = stale_ids[i:i + batch_size]
+        placeholders = ','.join('?' * len(batch_ids))
+        rows = db.execute(
+            f"SELECT id, content FROM _raw_chunks WHERE id IN ({placeholders})",
+            batch_ids
+        ).fetchall()
 
         if not rows:
-            break
+            continue
 
         texts = [r[1] for r in rows]
         embeddings = embedder.encode(texts, batch_size=batch_size)
