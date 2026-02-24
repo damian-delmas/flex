@@ -40,7 +40,6 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 WORKDIR /flex
 COPY pyproject.toml ./
 COPY flex/ ./flex/
-COPY views/ ./views/
 
 RUN pip3 install --break-system-packages -e ".[mcp,cluster]"
 
