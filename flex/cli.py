@@ -559,14 +559,22 @@ _VIEW_DIRS_BY_NAME = {
 
 
 def _find_view_dir(cell_name: str, cell_type: str | None) -> Path | None:
-    """Resolve the curated view directory for a cell."""
-    repo_root = PKG_ROOT.parent  # flex/ -> main/
-    # Try by cell_type first, then by name
+    """Resolve the curated view directory for a cell.
+
+    ~/.flex/views/ takes precedence (user-owned, editable without repo).
+    Falls back to main/views/ for development.
+    """
     rel = _VIEW_DIRS.get(cell_type) or _VIEW_DIRS_BY_NAME.get(cell_name)
-    if rel:
-        d = repo_root / rel
-        if d.exists():
-            return d
+    if not rel:
+        return None
+    # User home takes precedence
+    user_dir = Path.home() / '.flex' / rel
+    if user_dir.exists():
+        return user_dir
+    # Repo fallback
+    repo_dir = PKG_ROOT.parent / rel
+    if repo_dir.exists():
+        return repo_dir
     return None
 
 
