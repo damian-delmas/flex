@@ -27,7 +27,6 @@ SYSTEMD_DIR = Path.home() / ".config" / "systemd" / "user"
 PKG_ROOT = Path(__file__).parent
 CAPTURE_HOOKS_DIR = PKG_ROOT / "modules" / "claude_code" / "compile" / "hooks"
 DOCPAC_HOOKS_DIR  = PKG_ROOT / "modules" / "docpac" / "compile" / "hooks"
-SYSTEMD_TMPL_DIR  = PKG_ROOT / "data" / "systemd"
 
 # PostToolUse matcher — all tool types that produce indexable events
 POST_TOOL_MATCHER = (
@@ -140,13 +139,36 @@ def _install_systemd():
     SYSTEMD_DIR.mkdir(parents=True, exist_ok=True)
     python = sys.executable
 
-    for tmpl_name, service_name in [
-        ("flex-worker.service.tmpl", "flex-worker.service"),
-        ("flex-mcp.service.tmpl", "flex-mcp.service"),
-    ]:
-        tmpl = (SYSTEMD_TMPL_DIR / tmpl_name).read_text()
-        rendered = tmpl.replace("{{PYTHON}}", python)
-        (SYSTEMD_DIR / service_name).write_text(rendered)
+    _SYSTEMD_UNITS = {
+        "flex-worker.service": (
+            "[Unit]\n"
+            "Description=Flex Live Capture Worker\n"
+            "After=network.target\n\n"
+            "[Service]\n"
+            "Type=simple\n"
+            f"ExecStart={python} -m flex.modules.claude_code.compile.worker --daemon\n"
+            "Restart=on-failure\n"
+            "RestartSec=5\n"
+            "Environment=PYTHONUNBUFFERED=1\n\n"
+            "[Install]\n"
+            "WantedBy=default.target\n"
+        ),
+        "flex-mcp.service": (
+            "[Unit]\n"
+            "Description=Flex MCP Server\n"
+            "After=network.target\n\n"
+            "[Service]\n"
+            "Type=simple\n"
+            f"ExecStart={python} -m flex.mcp_server --http --port 8081\n"
+            "Restart=always\n"
+            "RestartSec=5\n"
+            "Environment=PYTHONUNBUFFERED=1\n\n"
+            "[Install]\n"
+            "WantedBy=default.target\n"
+        ),
+    }
+    for service_name, content in _SYSTEMD_UNITS.items():
+        (SYSTEMD_DIR / service_name).write_text(content)
 
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(
