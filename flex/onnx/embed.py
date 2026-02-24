@@ -159,6 +159,7 @@ class ONNXEmbedder:
         normalize: bool = True,
         prefix: str = 'search_document: ',
         show_progress_bar: bool = False,  # noqa: ARG002 — sentence-transformers API compat
+        matryoshka_dim: int = 128,
     ) -> np.ndarray:
         """
         Encode sentences to embeddings with adaptive batching.
@@ -174,9 +175,12 @@ class ONNXEmbedder:
             prefix: Task prefix for Nomic (default 'search_document: ' for indexing,
                     use 'search_query: ' for retrieval). Empty string for no prefix.
             show_progress_bar: Ignored. Exists for sentence-transformers API compatibility.
+            matryoshka_dim: Truncate output to this many dimensions (Matryoshka).
+                    Default 128. Set to 768 for full embeddings. Re-normalizes after
+                    truncation so cosine similarity remains valid.
 
         Returns:
-            numpy array of shape (n_sentences, 768)
+            numpy array of shape (n_sentences, matryoshka_dim)
         """
         if isinstance(sentences, str):
             sentences = [sentences]
@@ -219,6 +223,15 @@ class ONNXEmbedder:
         # Unsort back to original order
         result = np.empty_like(stacked)
         result[order] = stacked
+
+        # Matryoshka truncation: slice to target dim and re-normalize
+        if matryoshka_dim and matryoshka_dim < result.shape[1]:
+            result = result[:, :matryoshka_dim].copy()
+            if normalize:
+                norms = np.linalg.norm(result, axis=1, keepdims=True)
+                norms = np.where(norms < 1e-9, 1.0, norms)
+                result = result / norms
+
         return result
 
 

@@ -1,5 +1,5 @@
 """
-Incremental re-embed: 384-dim → 768-dim (Nomic embed-text-v1.5).
+Incremental re-embed: 384-dim → 128-dim (Nomic embed-text-v1.5, Matryoshka).
 
 Resumable. Commits after each batch. Detects already-embedded chunks by
 dimension (length(embedding)/4). Safe to re-run after crash — picks up
@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from flex.registry import list_cells, resolve_cell
 
-TARGET_DIM = 768
+TARGET_DIM = 128
 EMBED_BYTES = TARGET_DIM * 4  # float32
 
 
