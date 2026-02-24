@@ -251,15 +251,15 @@ def cmd_init(args):
     (FLEX_HOME / "cells").mkdir(exist_ok=True)
     print("  [ok] ~/.flex/ created")
 
-    # 2. Download model
+    # 2. Install model (copy from bundled package, or download from GitHub)
     from flex.onnx.fetch import download_model, model_ready
     if model_ready():
-        print("  [ok] model already downloaded")
+        print("  [ok] model ready")
     else:
-        print("  Downloading embedding model...")
+        print("  Installing embedding model...")
         try:
             download_model()
-            print("  [ok] model downloaded")
+            print("  [ok] model installed")
         except RuntimeError as e:
             print(f"  [FAIL] {e}")
             print("  Continuing without model — backfill will be skipped.")

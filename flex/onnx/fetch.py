@@ -13,6 +13,9 @@ from pathlib import Path
 FLEX_HOME = Path(os.environ.get("FLEX_HOME", Path.home() / ".flex"))
 MODEL_DIR = FLEX_HOME / "models"
 
+# Bundled model lives alongside this file in flex/onnx/
+BUNDLED_DIR = Path(__file__).parent
+
 BASE_URL = "https://github.com/axpsystems/flex/releases/download/v0.1.1"
 
 FILES = [
@@ -28,8 +31,22 @@ def model_dir() -> Path:
 
 
 def model_ready() -> bool:
-    """Check if all model files exist."""
-    return all((MODEL_DIR / name).exists() for name, _ in FILES)
+    """Check if all model files exist (user dir or bundled)."""
+    return (
+        all((MODEL_DIR / name).exists() for name, _ in FILES)
+        or all((BUNDLED_DIR / name).exists() for name, _ in FILES)
+    )
+
+
+def _copy_bundled() -> bool:
+    """Copy bundled model files to ~/.flex/models/. Returns True if successful."""
+    if not all((BUNDLED_DIR / name).exists() for name, _ in FILES):
+        return False
+    import shutil
+    dest = model_dir()
+    for name, _ in FILES:
+        shutil.copy2(BUNDLED_DIR / name, dest / name)
+    return True
 
 
 def _sha256(path: Path) -> str:
@@ -52,10 +69,10 @@ def _progress_hook(block_num, block_size, total_size):
 
 def download_model(force: bool = False) -> Path:
     """
-    Download model files from GitHub release assets.
+    Install model files: copy from bundled package first, fall back to GitHub download.
 
     Args:
-        force: Re-download even if files exist.
+        force: Re-copy/download even if files exist.
 
     Returns:
         Path to model directory.
@@ -64,6 +81,11 @@ def download_model(force: bool = False) -> Path:
         RuntimeError: If download fails or checksum mismatch.
     """
     dest = model_dir()
+
+    # Fast path: copy from bundled package (no network, works in Docker/offline)
+    if not force and not all((dest / name).exists() for name, _ in FILES):
+        if _copy_bundled():
+            return dest
 
     for name, expected_hash in FILES:
         target = dest / name
