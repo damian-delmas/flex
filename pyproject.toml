@@ -21,8 +21,13 @@ flex = "flex.cli:main"
 [tool.setuptools.package-data]
 flex = [
     "modules/claude_code/compile/hooks/*.sh",
-    "data/hooks/*.sh",
-    "data/systemd/*.tmpl",
+    "modules/docpac/compile/hooks/*.sh",
+    "modules/claude_code/stock/presets/*.sql",
+    "modules/claude_code/stock/views/*.sql",
+    "modules/claude_chat/stock/views/*.sql",
+    "modules/docpac/stock/views/*.sql",
+    "modules/soma/stock/presets/*.sql",
+    "retrieve/presets/general/*.sql",
     "onnx/*.json",
     "onnx/vocab.txt",
 ]

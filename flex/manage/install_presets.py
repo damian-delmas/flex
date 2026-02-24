@@ -23,8 +23,8 @@ GENERAL_DIR = PRESET_ROOT / "general"
 MODULE_ROOT = Path(__file__).resolve().parent.parent / "modules"
 MODULE_PRESETS = {
     'claude-code': [
-        MODULE_ROOT / "claude_code" / "library" / "presets",
-        MODULE_ROOT / "soma"        / "library" / "presets",
+        MODULE_ROOT / "claude_code" / "stock" / "presets",
+        MODULE_ROOT / "soma"        / "stock" / "presets",
     ],
 }
 
