@@ -110,10 +110,17 @@ class ONNXEmbedder:
             # inter_op=1 because we run one model sequentially.
             opts.intra_op_num_threads = 0
             opts.inter_op_num_threads = 1
+            # Prefer CUDA if available, fall back to CPU transparently
+            available = ort.get_available_providers()
+            providers = (
+                ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                if "CUDAExecutionProvider" in available
+                else ["CPUExecutionProvider"]
+            )
             self._session = ort.InferenceSession(
                 str(self.model_path),
                 sess_options=opts,
-                providers=["CPUExecutionProvider"]
+                providers=providers,
             )
         return self._session
 
