@@ -25,6 +25,8 @@ from datetime import datetime
 
 import uuid as _uuid
 from flex.registry import resolve_cell, register_cell, FLEX_HOME
+from flex.core import log_op
+from flex.views import install_views
 from flex.onnx.embed import get_model, encode
 from flex.modules.claude_code.compile.soft_detect import detect_file_ops
 # Docpac module — optional, graceful degradation when absent
@@ -67,6 +69,10 @@ except ImportError:
 
 QUEUE_DB = FLEX_HOME / "queue.db"
 CLAUDE_PROJECTS = Path.home() / ".claude/projects"
+
+# View directory resolution for auto-sync (user library takes precedence over stock)
+_USER_VIEW_DIR  = FLEX_HOME / 'views' / 'claude_code'
+_STOCK_VIEW_DIR = Path(__file__).parent.parent / 'stock' / 'views'
 
 # Session index cache: {project_dir_str: {session_id: {"summary": ..., "firstPrompt": ...}}}
 _index_cache: dict[str, dict] = {}
@@ -1034,6 +1040,24 @@ def _cc_graph_stale(conn, threshold=50):
     return new_sessions >= threshold
 
 
+def _check_and_sync_views(conn: sqlite3.Connection) -> None:
+    """Auto-install curated views if any .sql file is newer than last install."""
+    view_dir = _USER_VIEW_DIR if _USER_VIEW_DIR.exists() else (
+        _STOCK_VIEW_DIR if _STOCK_VIEW_DIR.exists() else None
+    )
+    if not view_dir:
+        return
+    row = conn.execute(
+        "SELECT MAX(timestamp) FROM _ops WHERE operation = 'install_views'"
+    ).fetchone()
+    last_install = row[0] if row and row[0] else 0
+    stale = any(f.stat().st_mtime > last_install for f in view_dir.glob('*.sql'))
+    if stale:
+        install_views(conn, view_dir)
+        conn.commit()
+        print(f"[worker] Auto-synced views from {view_dir}", file=sys.stderr)
+
+
 def _run_enrichment_cycle(conn, graph_threshold=50):
     """Run the enrichment cycle: graph (if stale), fingerprints, repo_project."""
     t0 = time.time()
@@ -1068,6 +1092,24 @@ def _run_enrichment_cycle(conn, graph_threshold=50):
                 print(f"[enrich] {n} sources attributed", file=sys.stderr)
         except Exception as e:
             print(f"[enrich] Repo project error: {e}", file=sys.stderr)
+
+    # 4. Queue depth snapshot — write to _ops for @health visibility
+    try:
+        qconn = sqlite3.connect(str(QUEUE_DB), timeout=5)
+        cc_depth = qconn.execute("SELECT COUNT(*) FROM claude_code_pending").fetchone()[0]
+        dp_depth = qconn.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
+        qconn.close()
+        log_op(conn, 'queue_snapshot', 'queue.db',
+               params={'claude_code': cc_depth, 'docpac': dp_depth})
+        conn.commit()
+    except Exception:
+        pass  # non-critical metric
+
+    # 5. View auto-sync — install views if .sql files changed since last install
+    try:
+        _check_and_sync_views(conn)
+    except Exception as e:
+        print(f"[enrich] View sync error: {e}", file=sys.stderr)
 
     elapsed = time.time() - t0
     if elapsed > 1.0:

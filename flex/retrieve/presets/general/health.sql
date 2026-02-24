@@ -1,5 +1,5 @@
 -- @name: health
--- @description: Pipeline health check. Chunk/source counts, embedding coverage, graph freshness, recent ops.
+-- @description: Pipeline health check. Chunk/source counts, embedding coverage, graph freshness, queue depth, recent ops.
 -- @multi: true
 
 -- @query: counts
@@ -27,6 +27,16 @@ SELECT
            (SELECT MAX(timestamp) FROM _ops WHERE operation = 'build_similarity_graph'),
            0
        )) as sources_since_graph;
+
+-- @query: queue
+SELECT
+    json_extract(params, '$.claude_code') as claude_code_pending,
+    json_extract(params, '$.docpac')      as docpac_pending,
+    datetime(timestamp, 'unixepoch', 'localtime') as checked_at
+FROM _ops
+WHERE operation = 'queue_snapshot'
+ORDER BY timestamp DESC
+LIMIT 1;
 
 -- @query: recent_ops
 SELECT operation, target,
