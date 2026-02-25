@@ -366,20 +366,6 @@ def cmd_init(args):
 
     console.print("  [dim]storage[/dim]             [green]ok[/green]")
 
-    # 1b. System deps
-    import shutil as _shutil
-    if not _shutil.which("jq"):
-        console.print("  [red]jq not found — hooks will not capture sessions.[/red]")
-        console.print("  [dim]  Install: sudo apt install jq  |  brew install jq[/dim]")
-        return
-
-    # 1c. hdbscan (optional — warn if missing)
-    try:
-        import hdbscan as _hdbscan  # noqa: F401
-    except ImportError:
-        console.print("  [dim]hdbscan[/dim]             [yellow]missing — topic clusters disabled[/yellow]")
-        console.print("  [dim]  pip install 'getflex[cluster]'  (needs build-essential)[/dim]")
-
     # 2. Model
     from flex.onnx.fetch import download_model, model_ready
     if not model_ready():
@@ -391,7 +377,23 @@ def cmd_init(args):
             return
     console.print("  [dim]model[/dim]               [green]ok[/green]")
 
-    # 3. Hooks + settings
+    # 3. Pre-flight: check system deps before doing anything
+    import shutil as _shutil, os as _os
+    if not _shutil.which("jq"):
+        _sudo = "" if _os.geteuid() == 0 else "sudo "
+        console.print()
+        console.print("  [yellow]Missing dependency — run first:[/yellow]")
+        console.print()
+        if _shutil.which("brew"):
+            console.print("  [bold]brew install jq[/bold]")
+        else:
+            console.print(f"  [bold]{_sudo}apt install jq[/bold]")
+        console.print()
+        console.print("  Then re-run: [bold]flex init[/bold]")
+        console.print()
+        return
+
+    # 3b. Hooks + settings
     _install_hooks()
     _patch_settings_json()
     console.print("  [dim]capture[/dim]             [green]ok[/green]")
@@ -507,13 +509,18 @@ def cmd_init(args):
             cluster_info = f"{n_clusters} topic clusters found" if n_clusters else "done"
             progress.update(t_graph, total=1, completed=1, info=cluster_info)
 
-        cluster_str = f" · {n_clusters} topic clusters" if n_clusters else ""
         console.print()
         console.print(
             f"  [bold]{stats['sessions']:,} sessions[/bold] · "
             f"[bold]{stats['chunks']:,} chunks[/bold]"
-            f"[dim]{cluster_str}[/dim]"
+            + (f" · [bold]{n_clusters}[/bold][dim] topic clusters[/dim]" if n_clusters else "")
         )
+        if _enrich_failures:
+            console.print()
+            for _f in _enrich_failures:
+                console.print(f"  [yellow]⚠  {_f} skipped[/yellow]")
+            console.print()
+            console.print("  [dim]Re-run [bold]flex init[/bold] after fixing the above.[/dim]")
         console.print()
         try:
             from flex.core import log_op
@@ -544,22 +551,13 @@ def cmd_init(args):
 
     # Final box
     panel_content = Text()
-    panel_content.append("Claude Code", style="white")
-    panel_content.append("  ready  ", style="bold green")
-    panel_content.append("(reopen to activate)\n\n", style="dim")
-    panel_content.append("MCP Server Endpoint\n", style="white")
-    panel_content.append("  · Hosted    ", style="dim")
-    panel_content.append("run ", style="dim")
-    panel_content.append("'flex relay'\n", style="bold blue")
-    panel_content.append("  · Self      ", style="dim")
-    panel_content.append("tunnel ", style="dim")
-    panel_content.append("http://localhost:8081", style="bold blue")
+    panel_content.append("Claude Code  ", style="white")
+    panel_content.append("ready\n\n", style="bold green")
+    panel_content.append("MCP Server Endpoint   ", style="white")
+    panel_content.append("http://localhost:8081", style="bold green")
     console.print(Panel(panel_content, padding=(0, 1)))
     console.print()
 
-    if _enrich_failures:
-        console.print(f"  [dim]enrichment warnings: {', '.join(_enrich_failures)} skipped[/dim]")
-        console.print()
 
 
 # ============================================================
