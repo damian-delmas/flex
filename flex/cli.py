@@ -155,7 +155,7 @@ def _install_systemd():
             "After=network.target\n\n"
             "[Service]\n"
             "Type=simple\n"
-            f"ExecStart={python} -m flex.mcp_server --http --port 7532\n"
+            f"ExecStart={python} -m flex.mcp_server --http --port 7134\n"
             "Restart=always\n"
             "RestartSec=5\n"
             "Environment=PYTHONUNBUFFERED=1\n\n"
@@ -183,7 +183,7 @@ def _patch_claude_json():
 
     servers = data.setdefault("mcpServers", {})
     if "flex" not in servers:
-        servers["flex"] = {"type": "sse", "url": "http://localhost:7532/sse"}
+        servers["flex"] = {"type": "sse", "url": "http://localhost:7134/sse"}
         CLAUDE_JSON.write_text(json.dumps(data, indent=2) + "\n")
         return True
     return False
@@ -554,7 +554,7 @@ def cmd_init(args):
     panel_content.append("Claude Code  ", style="white")
     panel_content.append("ready\n\n", style="bold green")
     panel_content.append("MCP Server Endpoint   ", style="white")
-    panel_content.append("http://localhost:7532", style="bold green")
+    panel_content.append("http://localhost:7134", style="bold green")
     console.print(Panel(panel_content, padding=(0, 1)))
     console.print()
 
@@ -994,9 +994,6 @@ def main():
     search_p.add_argument("--cell", default="claude_code", help="Cell to query (default: claude_code)")
     search_p.add_argument("--json", action="store_true", help="Output raw JSON")
 
-    # flex relay
-    sub.add_parser("relay", help="Start getflex.dev HTTPS endpoint for claude.ai")
-
     # flex sync
     sync_p = sub.add_parser("sync", help="Bring code, data, and services into parity")
     sync_p.add_argument("--cell", default=None, help="Sync specific cell only (default: all)")
@@ -1005,8 +1002,6 @@ def main():
     args = parser.parse_args()
     if args.command == "init":
         cmd_init(args)
-    elif args.command == "relay":
-        cmd_relay(args)
     elif args.command == "index":
         cmd_index(args)
     elif args.command == "search":
