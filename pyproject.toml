@@ -19,7 +19,6 @@ dependencies = [
 
 [project.optional-dependencies]
 relay = ["websockets"]
-nomic = ["nomic"]
 
 [project.scripts]
 flex = "flex.cli:main"

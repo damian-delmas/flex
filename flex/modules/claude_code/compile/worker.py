@@ -922,16 +922,24 @@ def bootstrap_claude_code_cell() -> Path:
 
 
 def _batch_embed_chunks(conn, batch_size: int = 500, quiet: bool = False,
-                        progress_cb=None) -> int:
+                        progress_cb=None, embedder=None) -> int:
     """Phase 2 of decoupled backfill: batch embed all NULL-embedding chunks.
 
-    SELECT content WHERE embedding IS NULL → encode(batch=500) → UPDATE.
+    SELECT content WHERE embedding IS NULL → encode(batch) → UPDATE.
     Commits after each batch. Returns total embedded count.
+
+    batch_size defaults to 500 for local ONNX (GPU-friendly).
+    Overridden automatically if embedder exposes ._batch_size (e.g. NomicEmbedder=64).
 
     Args:
         progress_cb: Optional callback(done, total) called after each batch.
+        embedder: Optional embedder instance (e.g. NomicEmbedder). If None,
+                  uses the default ONNX singleton via encode().
     """
-    embedder = get_embedder()
+    _enc = embedder.encode if embedder is not None else encode
+    # Use embedder's preferred batch size if it exposes one (e.g. NomicEmbedder=64)
+    if embedder is not None and hasattr(embedder, '_batch_size'):
+        batch_size = embedder._batch_size
     done = 0
     t0 = time.time()
 
@@ -954,7 +962,7 @@ def _batch_embed_chunks(conn, batch_size: int = 500, quiet: bool = False,
             break
 
         texts = [r[1] for r in rows]
-        embeddings = encode(texts)
+        embeddings = _enc(texts)
 
         conn.executemany(
             "UPDATE _raw_chunks SET embedding = ? WHERE id = ?",
@@ -985,7 +993,7 @@ def _batch_embed_chunks(conn, batch_size: int = 500, quiet: bool = False,
 
 def initial_backfill(conn, progress_cb=None, phase2_cb=None,
                      commit_every: int = 50, quiet_embed: bool = False,
-                     embed_progress_cb=None) -> dict:
+                     embed_progress_cb=None, embedder_ref=None) -> dict:
     """Backfill all sessions with batched commits and progress.
 
     Decoupled two-phase approach:
@@ -1037,7 +1045,9 @@ def initial_backfill(conn, progress_cb=None, phase2_cb=None,
     # Phase 2: batch embed all NULL-embedding chunks
     if phase2_cb:
         phase2_cb(sessions, chunks, time.time() - t0)
-    _batch_embed_chunks(conn, quiet=quiet_embed, progress_cb=embed_progress_cb)
+    _embedder = embedder_ref[0] if embedder_ref is not None else None
+    _batch_embed_chunks(conn, quiet=quiet_embed, progress_cb=embed_progress_cb,
+                        embedder=_embedder)
 
     return {'sessions': sessions, 'chunks': chunks, 'elapsed': time.time() - t0}
 

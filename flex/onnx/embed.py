@@ -82,6 +82,15 @@ def _get_onnxruntime():
     return _ort
 
 
+def has_gpu() -> bool:
+    """Return True if CUDAExecutionProvider is available."""
+    try:
+        ort = _get_onnxruntime()
+        return "CUDAExecutionProvider" in ort.get_available_providers()
+    except Exception:
+        return False
+
+
 def _get_tokenizer():
     global _tokenizer
     if _tokenizer is None:

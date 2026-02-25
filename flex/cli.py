@@ -435,7 +435,68 @@ def cmd_init(args):
         ).fetchone()[0]
         _phase = {"sessions": _already, "chunks": _existing_chunks}
 
-        _nomic_embedder = [None]  # set by _phase2 if user provides a Nomic API key
+        _nomic_embedder = [None]  # set below if user provides a Nomic API key
+
+        # Prompt for Nomic key BEFORE scanning so user can walk away.
+        # Estimate unembedded chunks from unprocessed session count (avg ~50 chunks/session).
+        _est_unembedded = (_existing_chunks - _already_embedded) + (len(jsonls) - _already) * 50
+        try:
+            from flex.onnx.embed import has_gpu as _has_gpu
+            if not _has_gpu() and _est_unembedded > 10_000:
+                import threading as _threading
+                from flex.onnx.nomic_embed import NomicEmbedder as _NomicEmbedder
+                _flex_cfg = FLEX_HOME / "config"
+                _saved_key = None
+                if _flex_cfg.exists():
+                    for _line in _flex_cfg.read_text().splitlines():
+                        if _line.startswith("NOMIC_API_KEY="):
+                            _saved_key = _line.split("=", 1)[1].strip()
+                            break
+                _env_key = os.environ.get("NOMIC_API_KEY", "").strip()
+                key = _saved_key or _env_key
+
+                if key:
+                    _nomic_embedder[0] = _NomicEmbedder(key)
+                else:
+                    est_secs = _est_unembedded / 27
+                    est_str = f"~{est_secs / 60:.0f}m" if est_secs < 3600 else f"~{est_secs / 3600:.1f}h"
+                    console.print(f"  No GPU detected. Estimated embedding time: {est_str} on CPU.")
+                    console.print("  Recommended: use the Nomic API (same model, ~4 min, free tier).")
+                    console.print("  [dim]Note: chunks sent to Nomic's servers.[/dim]")
+                    console.print("  Get a free key: [bold blue][link=https://atlas.nomic.ai/cli-login]atlas.nomic.ai/cli-login[/link][/bold blue]")
+                    console.print()
+                    key = input("  Enter Nomic API key (or press Enter to use local CPU): ").strip()
+                    if key:
+                        _ne = _NomicEmbedder(key)
+                        import sys as _sys
+                        _done_event = _threading.Event()
+                        def _spin():
+                            frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+                            i = 0
+                            while not _done_event.is_set():
+                                _sys.stdout.write(f"\r  {frames[i % len(frames)]} Validating key...")
+                                _sys.stdout.flush()
+                                _done_event.wait(0.1)
+                                i += 1
+                        _spin_thread = _threading.Thread(target=_spin, daemon=True)
+                        _spin_thread.start()
+                        _err = _ne.validate()
+                        _done_event.set()
+                        _spin_thread.join()
+                        if _err:
+                            _sys.stdout.write(f"\r  ⚠  Key invalid: {_err}\n")
+                            _sys.stdout.write("  Falling back to local CPU.\n")
+                            _sys.stdout.flush()
+                        else:
+                            _nomic_embedder[0] = _ne
+                            _sys.stdout.write("\r  ✓  Nomic API ready.     \n")
+                            _sys.stdout.flush()
+                            _lines = [l for l in (_flex_cfg.read_text().splitlines() if _flex_cfg.exists() else []) if not l.startswith("NOMIC_API_KEY=")]
+                            _lines.append(f"NOMIC_API_KEY={key}")
+                            _flex_cfg.write_text("\n".join(_lines) + "\n")
+                    console.print()
+        except Exception:
+            pass  # any failure → fall through to local ONNX
 
         with Progress(
             TextColumn("  [dim]{task.description:<20}[/dim]"),
@@ -481,41 +542,6 @@ def cmd_init(args):
                 _phase["sessions"] = sessions
                 _phase["chunks"]   = chunks
 
-                # Nomic API fast-path: offer to CPU-only users with large corpora
-                unembedded = chunks - _already_embedded
-                if unembedded > 10_000:
-                    try:
-                        from flex.onnx.embed import has_gpu as _has_gpu
-                        if not _has_gpu():
-                            progress.stop()
-                            est_secs = unembedded / 27  # ~27 chunks/s CPU baseline
-                            if est_secs < 3600:
-                                est_str = f"~{est_secs / 60:.0f}m"
-                            else:
-                                est_str = f"~{est_secs / 3600:.1f}h"
-                            console.print()
-                            console.print(f"  No GPU detected. Estimated embedding time: {est_str} on CPU.")
-                            console.print("  Recommended: use the Nomic API (same model, ~4 min, free tier).")
-                            console.print("  [dim]Note: chunks sent to Nomic's servers.[/dim]")
-                            console.print("  Get a free key: [bold]atlas.nomic.ai[/bold]")
-                            console.print()
-                            key = input("  Enter Nomic API key (or press Enter to use local CPU): ").strip()
-                            if key:
-                                from flex.onnx.nomic_embed import NomicEmbedder as _NomicEmbedder
-                                _ne = _NomicEmbedder(key)
-                                console.print("  [dim]Validating key...[/dim]", end="")
-                                _err = _ne.validate()
-                                if _err:
-                                    console.print(f"\r  [yellow]⚠  Key invalid: {_err}[/yellow]")
-                                    console.print("  [dim]Falling back to local CPU.[/dim]")
-                                else:
-                                    _nomic_embedder[0] = _ne
-                                    console.print(f"\r  [green]✓  Nomic API ready.[/green]      ")
-                            console.print()
-                            progress.start()
-                    except Exception:
-                        pass  # any failure → fall through to local ONNX
-
                 progress.update(t_index, visible=True,
                                 completed=_already_embedded, total=_existing_chunks,
                                 info=f"{_already_embedded:,} / {_existing_chunks:,} chunks   calculating...")
@@ -527,7 +553,7 @@ def cmd_init(args):
                     _embed_start[0] = time.time()
                 abs_done  = _already_embedded + done
                 abs_total = _already_embedded + total
-                if done >= 1500:
+                if _embed_start[0] and (time.time() - _embed_start[0]) >= 15:
                     eta = _eta_str(done, total, _embed_start[0])
                 else:
                     eta = "calculating..."
@@ -591,9 +617,9 @@ def cmd_init(args):
 
     # Final box
     panel_content = Text()
-    panel_content.append("Claude Code  ", style="white")
+    panel_content.append("Claude Code          ", style="white")
     panel_content.append("ready\n\n", style="bold green")
-    panel_content.append("MCP Server Endpoint   ", style="white")
+    panel_content.append("MCP Server Endpoint  ", style="white")
     panel_content.append("http://localhost:7134", style="bold green")
     console.print(Panel(panel_content, padding=(0, 1)))
     console.print()
@@ -863,7 +889,6 @@ def cmd_relay(args):
     panel_content.append("MCP Server Endpoint\n\n", style="white")
     panel_content.append("  ")
     panel_content.append(url, style="bold blue")
-    panel_content.append("  ← add in Settings → MCP", style="dim")
     console.print(Panel(panel_content, padding=(0, 1)))
 
 
