@@ -123,7 +123,46 @@ if cell_path and cell_path.exists():
     check("messages view",   "messages" in view_names, f"views: {view_names}")
     check("sessions view",   "sessions" in view_names, f"views: {view_names}")
 
+    # embedding dimension — all must be uniform (guards against mixed-model artifacts)
+    dims = {len(r[0]) // 4 for r in conn.execute(
+        "SELECT embedding FROM _raw_chunks WHERE embedding IS NOT NULL LIMIT 500"
+    ).fetchall()}
+    check("uniform embedding dims", len(dims) == 1, f"got dims: {dims}")
+
+    # enrichment has rows — not just table existence
+    n_graph = conn.execute(
+        "SELECT COUNT(*) FROM _enrich_source_graph"
+    ).fetchone()[0]
+    check("source graph has rows", n_graph > 0, f"got {n_graph}")
+
     conn.close()
+
+# ── flex-serve + vec_ops ───────────────────────────────────────────────────────
+import shutil, time
+
+if shutil.which("flex-serve"):
+    print()
+    print("=" * 60)
+    print("Starting flex-serve and testing vec_ops")
+    print("=" * 60)
+
+    subprocess.Popen(["flex-serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(4)  # wait for VectorCache to warm
+
+    r = subprocess.run(
+        ["flex", "search", "--json",
+         "SELECT v.id, v.score FROM vec_ops('_raw_chunks', 'test query') v LIMIT 3"],
+        capture_output=True, text=True, timeout=30,
+    )
+    check("vec_ops exit 0", r.returncode == 0, r.stderr[:200] if r.stderr else "")
+    if r.returncode == 0:
+        try:
+            rows = json.loads(r.stdout)
+            check("vec_ops returns rows", len(rows) > 0, f"got {len(rows)}")
+            check("vec_ops score field",
+                  all("score" in row for row in rows), "missing score")
+        except Exception as e:
+            check("vec_ops json parse", False, str(e))
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 print()

@@ -263,6 +263,23 @@ class TestEnrichmentPhase:
         # _ops may be empty if all steps failed — just must not crash
         conn.execute("SELECT COUNT(*) FROM _ops").fetchone()
 
+    def test_presets_installed(self, pipeline_env):
+        """orient preset must be installed — the most critical one."""
+        from flex.modules.claude_code.compile.worker import initial_backfill
+        from flex.cli import _run_enrichment_quiet
+        conn = pipeline_env["conn"]
+
+        initial_backfill(conn, quiet_embed=True)
+        _run_enrichment_quiet(conn)
+
+        names = {
+            r[0]
+            for r in conn.execute("SELECT name FROM _presets").fetchall()
+        }
+        assert "orient" in names, (
+            f"orient preset not installed. Got: {sorted(names)}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Embed phase (requires ONNX model)

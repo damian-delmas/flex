@@ -3,11 +3,18 @@
 # Build:
 #   docker build -f tests/docker/Dockerfile.dev -t flex-dev .
 #
-# Run (mount models + pass API key):
+# Run (mount source + models + sessions + API key):
 #   docker run -it --rm \
+#     -v /home/axp/projects/flexsearch/main:/flex \
 #     -v ~/.flex/models:/root/.flex/models:ro \
+#     -v /tmp/flex-staging:/root/.claude/projects:ro \
+#     -v flex-dev-cell:/root/.flex \
 #     -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
+#     -e TZ=$(cat /etc/timezone 2>/dev/null || timedatectl show -p Timezone --value 2>/dev/null || echo UTC) \
 #     flex-dev
+#
+# Source is mounted at /flex (editable install points there) — code changes on
+# the host are live in the container immediately, no rebuild required.
 #
 # Inside the container:
 #   flex init          # indexes mock sessions, wires ~/.claude.json
@@ -28,6 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
+    sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Node.js 20 + Claude Code ──────────────────────────────────────────────────

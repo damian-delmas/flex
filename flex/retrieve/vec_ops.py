@@ -165,6 +165,21 @@ class VectorCache:
             self.ids.append(row[0])
             vectors.append(np.frombuffer(row[1], dtype=np.float32))
 
+        # Detect dominant dimension and filter outliers (guards against mixed-model migrations)
+        dims = [v.shape[0] for v in vectors]
+        dominant_dim = max(set(dims), key=dims.count)
+        skipped = sum(1 for d in dims if d != dominant_dim)
+        if skipped:
+            print(f"VectorCache: skipping {skipped} vectors with dim != {dominant_dim} (mixed-model artifacts)",
+                  file=sys.stderr)
+            filtered = [(id_, v) for id_, v, d in zip(self.ids, vectors, dims) if d == dominant_dim]
+            self.ids, vectors = zip(*filtered) if filtered else ([], [])
+            self.ids = list(self.ids)
+            vectors = list(vectors)
+
+        if not vectors:
+            return self
+
         # Stack into matrix
         self.matrix = np.vstack(vectors)  # (n, dims)
         self.dims = self.matrix.shape[1]

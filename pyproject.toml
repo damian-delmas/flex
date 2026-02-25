@@ -9,10 +9,12 @@ dependencies = [
     "scikit-learn",
     "onnxruntime",
     "tokenizers",
+    "rich",
+    "tzlocal",
 ]
 
 [project.optional-dependencies]
-mcp = ["mcp", "starlette", "uvicorn"]
+mcp = ["mcp", "starlette", "uvicorn", "websockets"]
 cluster = ["hdbscan"]
 
 [project.scripts]

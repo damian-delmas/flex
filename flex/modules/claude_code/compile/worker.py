@@ -921,12 +921,15 @@ def bootstrap_claude_code_cell() -> Path:
     return db_path
 
 
-def _batch_embed_chunks(conn, batch_size: int = 500) -> int:
+def _batch_embed_chunks(conn, batch_size: int = 500, quiet: bool = False,
+                        progress_cb=None) -> int:
     """Phase 2 of decoupled backfill: batch embed all NULL-embedding chunks.
 
     SELECT content WHERE embedding IS NULL → encode(batch=500) → UPDATE.
-    Same pattern as reembed_nomic.py but uses the worker's embedder/encode.
     Commits after each batch. Returns total embedded count.
+
+    Args:
+        progress_cb: Optional callback(done, total) called after each batch.
     """
     embedder = get_embedder()
     done = 0
@@ -935,6 +938,9 @@ def _batch_embed_chunks(conn, batch_size: int = 500) -> int:
     total = conn.execute(
         "SELECT count(*) FROM _raw_chunks WHERE embedding IS NULL AND content IS NOT NULL"
     ).fetchone()[0]
+
+    if progress_cb:
+        progress_cb(0, total)
 
     while True:
         rows = conn.execute("""
@@ -957,24 +963,30 @@ def _batch_embed_chunks(conn, batch_size: int = 500) -> int:
         conn.commit()
         done += len(rows)
 
-        elapsed = time.time() - t0
-        rate = done / elapsed if elapsed > 0 else 0
-        remaining = (total - done) / rate if rate > 0 else 0
-        sys.stdout.write(
-            f"\r  ~ {done:,}/{total:,} chunks embedded  ({rate:.0f}/s, ~{remaining:.0f}s left)    "
-        )
-        sys.stdout.flush()
+        if progress_cb:
+            progress_cb(done, total)
+        elif not quiet:
+            elapsed = time.time() - t0
+            rate = done / elapsed if elapsed > 0 else 0
+            remaining = (total - done) / rate if rate > 0 else 0
+            sys.stdout.write(
+                f"\r  ~ {done:,}/{total:,} chunks embedded  ({rate:.0f}/s, ~{remaining:.0f}s left)    "
+            )
+            sys.stdout.flush()
 
-    elapsed = time.time() - t0
-    if done > 0:
-        rate = done / elapsed if elapsed > 0 else 0
-        sys.stdout.write("\r" + " " * 70 + "\r")  # clear progress line
-        print(f"  [ok] {done:,} chunks embedded in {elapsed:.0f}s ({rate:.0f}/s)")
+    if not quiet and not progress_cb:
+        elapsed = time.time() - t0
+        if done > 0:
+            rate = done / elapsed if elapsed > 0 else 0
+            sys.stdout.write("\r" + " " * 70 + "\r")  # clear progress line
+            print(f"  [ok] {done:,} chunks embedded in {elapsed:.0f}s ({rate:.0f}/s)")
     return done
 
 
-def initial_backfill(conn, progress_cb=None) -> dict:
-    """Backfill all sessions with per-session commits and progress.
+def initial_backfill(conn, progress_cb=None, phase2_cb=None,
+                     commit_every: int = 50, quiet_embed: bool = False,
+                     embed_progress_cb=None) -> dict:
+    """Backfill all sessions with batched commits and progress.
 
     Decoupled two-phase approach:
       Phase 1 — parse all sessions, insert chunks with embedding=NULL (I/O bound)
@@ -983,35 +995,49 @@ def initial_backfill(conn, progress_cb=None) -> dict:
     Args:
         conn: Open SQLite connection to the cell.
         progress_cb: Optional callback(files_done, files_total, sessions, chunks, elapsed).
+        phase2_cb: Optional callback(sessions, chunks, elapsed) fired just before Phase 2
+                   begins — lets the caller stop the Phase 1 spinner and print a header.
+        commit_every: Commit after this many sessions (default 50). Higher = fewer fsyncs,
+                      faster on overlay2/Docker. All inserts use INSERT OR IGNORE so
+                      re-parsing uncommitted sessions on crash is safe.
 
     Returns:
         dict with sessions, chunks, elapsed.
     """
     jsonls = list(CLAUDE_PROJECTS.rglob("*.jsonl"))
-    total = len(jsonls)
-    sessions = 0
-    chunks = 0
+
+    # Skip already-indexed sessions — avoids re-parsing on resume after crash/cancel.
+    already = {row[0] for row in conn.execute("SELECT source_id FROM _raw_sources").fetchall()}
+    pending = [j for j in jsonls if j.stem not in already]
+    total = len(pending)
+    # Seed counters from existing cell so progress display is cumulative.
+    sessions = len(already)
+    chunks = conn.execute("SELECT COUNT(*) FROM _raw_chunks").fetchone()[0]
     t0 = time.time()
 
-    # Phase 1: parse all sessions without embedding
-    for i, jsonl in enumerate(jsonls, 1):
+    # Phase 1: parse pending sessions without embedding
+    for i, jsonl in enumerate(pending, 1):
         session_id = jsonl.stem
         try:
             count = sync_session_messages(session_id, conn, skip_embed=True)
-            conn.commit()
             if count > 0:
                 chunks += count
                 sessions += 1
         except Exception as e:
             print(f"[init] Error syncing {session_id[:8]}: {e}", file=sys.stderr)
 
+        # Batch commits: amortise fsync cost across N sessions.
+        # Safe because all inserts are INSERT OR IGNORE — re-parse on crash is idempotent.
+        if i % commit_every == 0 or i == total:
+            conn.commit()
+
         if progress_cb:
             progress_cb(i, total, sessions, chunks, time.time() - t0)
 
     # Phase 2: batch embed all NULL-embedding chunks
-    print(f"[init] Phase 1 done: {sessions} sessions, {chunks} chunks. "
-          "Starting batch embed...", file=sys.stderr)
-    _batch_embed_chunks(conn)
+    if phase2_cb:
+        phase2_cb(sessions, chunks, time.time() - t0)
+    _batch_embed_chunks(conn, quiet=quiet_embed, progress_cb=embed_progress_cb)
 
     return {'sessions': sessions, 'chunks': chunks, 'elapsed': time.time() - t0}
 
@@ -1136,6 +1162,17 @@ def daemon_loop(interval=2):
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=30000")
+
+    # Ensure queue tables exist — hooks also create these inline, but the
+    # worker starts before any hook fires, so we must create them here.
+    qconn = sqlite3.connect(str(QUEUE_DB), timeout=5)
+    qconn.execute("PRAGMA journal_mode=WAL")
+    qconn.execute("""CREATE TABLE IF NOT EXISTS claude_code_pending (
+        session_id TEXT PRIMARY KEY, ts INTEGER)""")
+    qconn.execute("""CREATE TABLE IF NOT EXISTS pending (
+        path TEXT PRIMARY KEY, ts INTEGER)""")
+    qconn.commit()
+    qconn.close()
 
     # Ensure all tables exist (fresh cell bootstrap)
     _ensure_core_tables(conn)

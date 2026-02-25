@@ -2,6 +2,9 @@
 -- @description: Full cell orientation — shape, schema, graph intelligence, presets, samples
 -- @multi: true
 
+-- @query: now
+SELECT datetime('now', 'localtime') as now;
+
 -- @query: about
 SELECT value as description FROM _meta WHERE key = 'description';
 

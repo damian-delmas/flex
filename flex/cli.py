@@ -267,6 +267,7 @@ def _run_enrichment_quiet(conn) -> tuple[int, list[str]]:
     try:
         from flex.modules.claude_code.manage.rebuild_all import (
             rebuild_warmup_types, reembed_sources, rebuild_source_graph,
+            rebuild_community_labels,
         )
         from flex.modules.claude_code.manage.enrich_summary import run as run_fingerprints
         from flex.modules.claude_code.manage.enrich_soma_repos import run as _register_soma_repos
@@ -280,10 +281,11 @@ def _run_enrichment_quiet(conn) -> tuple[int, list[str]]:
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
         for step, fn in [
-            ("warmup types",     lambda: rebuild_warmup_types(conn)),
-            ("source pooling",   lambda: reembed_sources(conn)),
-            ("source graph",     lambda: rebuild_source_graph(conn)),
-            ("fingerprints",     lambda: run_fingerprints(conn)),
+            ("warmup types",       lambda: rebuild_warmup_types(conn)),
+            ("source pooling",     lambda: reembed_sources(conn)),
+            ("source graph",       lambda: rebuild_source_graph(conn)),
+            ("community labels",   lambda: rebuild_community_labels(conn)),
+            ("fingerprints",       lambda: run_fingerprints(conn)),
             ("repo registry",    lambda: _register_soma_repos(conn)),
             ("repo attribution", lambda: run_repo_project(conn)),
         ]:
@@ -293,7 +295,17 @@ def _run_enrichment_quiet(conn) -> tuple[int, list[str]]:
                 failures.append(step)
 
         try:
-            install_presets_cell('claude_code')
+            # Use existing conn directly to avoid a second connection fighting for
+            # the write lock while conn is still open.
+            from flex.manage.install_presets import install_presets
+            from flex.manage.install_presets import GENERAL_DIR, MODULE_PRESETS, MODULE_ROOT
+            for pd in [GENERAL_DIR] + MODULE_PRESETS.get('claude-code', []):
+                if pd.exists():
+                    install_presets(conn, pd)
+            conn.commit()
+            n_presets = conn.execute("SELECT COUNT(*) FROM _presets").fetchone()[0]
+            if n_presets == 0:
+                failures.append("presets (0 installed)")
         except Exception:
             failures.append("presets")
 
@@ -338,12 +350,6 @@ def cmd_init(args):
     FLEX_HOME.mkdir(parents=True, exist_ok=True)
     (FLEX_HOME / "cells").mkdir(exist_ok=True)
 
-    # Generate machine_id once — stable UUID for relay subdomain
-    import uuid as _uuid
-    machine_id_path = FLEX_HOME / "machine_id"
-    if not machine_id_path.exists():
-        machine_id_path.write_text(_uuid.uuid4().hex[:8])
-    machine_id = machine_id_path.read_text().strip()
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
@@ -472,6 +478,16 @@ def cmd_init(args):
             log_op(conn, 'init_complete', 'claude_code', rows_affected=stats['chunks'])
         except Exception:
             pass
+
+        try:
+            from tzlocal import get_localzone
+            _tz = str(get_localzone())
+        except Exception:
+            import datetime as _dt
+            _tz = _dt.datetime.now().astimezone().tzname() or 'UTC'
+        conn.execute("INSERT OR REPLACE INTO _meta(key, value) VALUES ('timezone', ?)", [_tz])
+        conn.commit()
+
         conn.close()
 
     # 5. Services
@@ -479,23 +495,24 @@ def cmd_init(args):
     if systemd_ok:
         console.print("  [dim]worker[/dim]             [green]running[/green]")
         console.print("  [dim]MCP[/dim]                [green]running[/green]")
-    else:
-        console.print("  [dim]worker + MCP[/dim]       [yellow]run 'flex-serve' to start[/yellow]")
 
     # 6. Claude Code wiring (localhost — direct, no relay)
     _patch_claude_json()
     console.print()
 
     # Final box
-    relay_url = f"https://{machine_id}.getflex.dev/sse"
     panel_content = Text()
-    panel_content.append("Claude Code    ", style="dim")
-    panel_content.append("ready  ", style="bold green")
-    panel_content.append("(reopen to activate)\n", style="dim")
-    panel_content.append("MCP Server     ", style="dim")
-    panel_content.append(relay_url, style="bold cyan")
-    panel_content.append("  ← add in Settings → MCP", style="dim")
-    console.print(Panel(panel_content, padding=(0, 2)))
+    panel_content.append("Claude Code", style="white")
+    panel_content.append("  ready  ", style="bold green")
+    panel_content.append("(reopen to activate)\n\n", style="dim")
+    panel_content.append("MCP Server Endpoint\n", style="white")
+    panel_content.append("  · Hosted    ", style="dim")
+    panel_content.append("run ", style="dim")
+    panel_content.append("'flex relay'\n", style="bold blue")
+    panel_content.append("  · Self      ", style="dim")
+    panel_content.append("tunnel ", style="dim")
+    panel_content.append("http://localhost:8081", style="bold blue")
+    console.print(Panel(panel_content, padding=(0, 1)))
     console.print()
 
     if _enrich_failures:
@@ -707,7 +724,7 @@ _ENRICHMENT_STUBS = {
     'claude-code': [
         """CREATE TABLE IF NOT EXISTS _enrich_source_graph (
             source_id TEXT PRIMARY KEY, centrality REAL, is_hub INTEGER DEFAULT 0,
-            is_bridge INTEGER DEFAULT 0, community_id INTEGER)""",
+            is_bridge INTEGER DEFAULT 0, community_id INTEGER, community_label TEXT)""",
         """CREATE TABLE IF NOT EXISTS _types_source_warmup (
             source_id TEXT PRIMARY KEY, is_warmup_only INTEGER DEFAULT 0)""",
         """CREATE TABLE IF NOT EXISTS _enrich_session_summary (
@@ -731,6 +748,36 @@ _ENRICHMENT_STUBS = {
             description TEXT, created_at INTEGER)""",
     ],
 }
+
+
+def cmd_relay(args):
+    """Generate machine_id, start services, print relay URL."""
+    import uuid as _uuid
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.text import Text
+    console = Console()
+
+    FLEX_HOME.mkdir(parents=True, exist_ok=True)
+    machine_id_path = FLEX_HOME / "machine_id"
+    if not machine_id_path.exists():
+        machine_id_path.write_text(_uuid.uuid4().hex[:8])
+    machine_id = machine_id_path.read_text().strip()
+
+    # Start services
+    _install_systemd()
+    flex_serve = Path("/usr/local/bin/flex-serve")
+    if flex_serve.exists():
+        import subprocess
+        subprocess.run([str(flex_serve)], check=False)
+
+    url = f"https://{machine_id}.getflex.dev/sse"
+    panel_content = Text()
+    panel_content.append("MCP Server Endpoint\n\n", style="white")
+    panel_content.append("  ")
+    panel_content.append(url, style="bold blue")
+    panel_content.append("  ← add in Settings → MCP", style="dim")
+    console.print(Panel(panel_content, padding=(0, 1)))
 
 
 def cmd_sync(args):
@@ -907,6 +954,9 @@ def main():
     search_p.add_argument("--cell", default="claude_code", help="Cell to query (default: claude_code)")
     search_p.add_argument("--json", action="store_true", help="Output raw JSON")
 
+    # flex relay
+    sub.add_parser("relay", help="Start getflex.dev HTTPS endpoint for claude.ai")
+
     # flex sync
     sync_p = sub.add_parser("sync", help="Bring code, data, and services into parity")
     sync_p.add_argument("--cell", default=None, help="Sync specific cell only (default: all)")
@@ -915,6 +965,8 @@ def main():
     args = parser.parse_args()
     if args.command == "init":
         cmd_init(args)
+    elif args.command == "relay":
+        cmd_relay(args)
     elif args.command == "index":
         cmd_index(args)
     elif args.command == "search":

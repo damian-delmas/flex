@@ -3,6 +3,9 @@
 -- @multi: true
 -- NOTE: claude_code override — enhances hubs with terse fingerprint_index from _enrich_session_summary
 
+-- @query: now
+SELECT datetime('now', 'localtime') as now;
+
 -- @query: about
 SELECT value as description FROM _meta WHERE key = 'description';
 
