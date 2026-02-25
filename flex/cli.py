@@ -196,7 +196,7 @@ def _run_enrichment(conn):
     presets and views from being installed (which are required for @orient).
     """
     import time as _time
-    t0 = _time.time()
+    t0 = time.time()
 
     try:
         from flex.modules.claude_code.manage.rebuild_all import (
@@ -256,7 +256,7 @@ def _run_enrichment(conn):
     except Exception as e:
         print(f"  [warn] views install failed: {e}")
 
-    print(f"  [ok] enrichment done in {_time.time()-t0:.0f}s")
+    print(f"  [ok] enrichment done in {time.time()-t0:.0f}s")
 
 
 def _run_enrichment_quiet(conn) -> tuple[int, list[str]]:
@@ -366,6 +366,20 @@ def cmd_init(args):
 
     console.print("  [dim]storage[/dim]             [green]ok[/green]")
 
+    # 1b. System deps
+    import shutil as _shutil
+    if not _shutil.which("jq"):
+        console.print("  [red]jq not found — hooks will not capture sessions.[/red]")
+        console.print("  [dim]  Install: sudo apt install jq  |  brew install jq[/dim]")
+        return
+
+    # 1c. hdbscan (optional — warn if missing)
+    try:
+        import hdbscan as _hdbscan  # noqa: F401
+    except ImportError:
+        console.print("  [dim]hdbscan[/dim]             [yellow]missing — topic clusters disabled[/yellow]")
+        console.print("  [dim]  pip install 'getflex[cluster]'  (needs build-essential)[/dim]")
+
     # 2. Model
     from flex.onnx.fetch import download_model, model_ready
     if not model_ready():
@@ -418,91 +432,88 @@ def cmd_init(args):
         ).fetchone()[0]
         _phase = {"sessions": _already, "chunks": _existing_chunks}
 
-        _init_start = time.time()
-
         with Progress(
             TextColumn("  [dim]{task.description:<20}[/dim]"),
             SpinnerColumn(spinner_name="dots", finished_text="[green]✓[/green]"),
             BarColumn(bar_width=20, complete_style="green", finished_style="green"),
             TextColumn("[dim]{task.fields[info]}[/dim]"),
-            TextColumn("[dim]{task.fields[right]}[/dim]"),
             console=console,
             transient=False,
         ) as progress:
-            t_read  = progress.add_task("Scanning sessions", total=len(jsonls), info="", right="",
+            t_read  = progress.add_task("Scanning sessions", total=len(jsonls), info="",
                                         completed=_already)
-            t_index = progress.add_task("Building vectors",  total=None,        info="", right="", visible=False)
-            t_graph = progress.add_task("Building graph",    total=None,        info="", right="", visible=False)
+            t_index = progress.add_task("Building vectors",  total=None,        info="", visible=False)
+            t_graph = progress.add_task("Building graph",    total=None,        info="", visible=False)
 
-            _scan_start: list = [None]
+            _scan_start = [None]
+
+            def _eta_str(done, total, start):
+                if start is None or done < 1:
+                    return "calculating..."
+                rate = done / (time.time() - start)
+                if rate <= 0:
+                    return "calculating..."
+                secs = (total - done) / rate
+                if secs < 60:
+                    return f"~{secs:.0f}s left"
+                elif secs < 3600:
+                    return f"~{secs/60:.0f}m left"
+                else:
+                    return f"~{secs/3600:.1f}h left"
 
             def _progress(i, total, sessions, chunks, elapsed):
-                if _scan_start[0] is None and i > 0:
+                if _scan_start[0] is None:
                     _scan_start[0] = time.time()
-
-                if _scan_start[0] and i >= 10:
-                    rate      = i / (time.time() - _scan_start[0])
-                    pending   = len(jsonls) - _already - i
-                    remaining = max(0, pending / rate) if rate > 0 else 0
-                    right     = f"~{remaining/60:.0f}m left" if remaining > 90 else f"~{remaining:.0f}s left"
-                else:
-                    right     = "calculating..."
-
+                eta = _eta_str(_already + i, len(jsonls), _scan_start[0]) if i >= 5 else "calculating..."
                 progress.update(t_read, completed=_already + i,
-                                info=f"{_already + i:,} / {total:,}", right=right)
+                                info=f"{_already + i:,} / {len(jsonls):,} sessions   {eta}")
                 _phase["sessions"] = sessions
                 _phase["chunks"]   = chunks
 
             def _phase2(sessions, chunks, elapsed):
-                elapsed_str = f"{int(elapsed//60)}:{int(elapsed%60):02d}"
                 progress.update(t_read, completed=len(jsonls),
-                                info=f"{sessions:,} sessions scanned", right=elapsed_str)
+                                info=f"{len(jsonls):,} sessions scanned")
                 _phase["sessions"] = sessions
                 _phase["chunks"]   = chunks
                 progress.update(t_index, visible=True,
                                 completed=_already_embedded, total=_existing_chunks,
-                                info="calculating...", right="")
+                                info=f"{_already_embedded:,} / {_existing_chunks:,} chunks   calculating...")
 
-            _embed_start: list = [None]
+            _embed_start = [None]
 
             def _embed_progress(done, total):
-                # done/total are relative to this run; offset by already-embedded for display
-                abs_done  = _already_embedded + done
-                abs_total = _already_embedded + total
-
                 if _embed_start[0] is None and done > 0:
                     _embed_start[0] = time.time()
-
-                if _embed_start[0] and done >= 500:
-                    elapsed   = time.time() - _embed_start[0]
-                    rate      = done / elapsed
-                    remaining = (total - done) / rate if rate > 0 else 0
-                    right     = f"~{remaining/60:.0f}m left" if remaining > 90 else f"~{remaining:.0f}s left"
+                abs_done  = _already_embedded + done
+                abs_total = _already_embedded + total
+                if done >= 1500:
+                    eta = _eta_str(done, total, _embed_start[0])
                 else:
-                    right     = "calculating..."
-
+                    eta = "calculating..."
                 progress.update(t_index, completed=abs_done, total=abs_total,
-                                info=f"{abs_done:,} / {abs_total:,}", right=right)
+                                info=f"{abs_done:,} / {abs_total:,} chunks   {eta}")
 
             buf2 = io.StringIO()
             with contextlib.redirect_stderr(buf2):
                 stats = initial_backfill(conn, progress_cb=_progress, phase2_cb=_phase2,
                                          quiet_embed=True, embed_progress_cb=_embed_progress)
 
-            embed_elapsed = time.time() - _embed_start[0] if _embed_start[0] else 0
-            embed_elapsed_str = f"{int(embed_elapsed//60)}:{int(embed_elapsed%60):02d}"
             progress.update(t_index, completed=stats['chunks'], total=stats['chunks'],
-                            info=f"{stats['chunks']:,} chunks embedded", right=embed_elapsed_str)
+                            info=f"{stats['chunks']:,} chunks embedded")
 
             # Graph + enrichment (spinner, fully silent)
-            graph_start = time.time()
-            progress.update(t_graph, visible=True, info="", right="")
+            progress.update(t_graph, visible=True, info="analyzing...")
             n_clusters, _enrich_failures = _run_enrichment_quiet(conn)
-            graph_elapsed = time.time() - graph_start
-            graph_elapsed_str = f"{int(graph_elapsed//60)}:{int(graph_elapsed%60):02d}"
-            cluster_info = f"{n_clusters} topics clustered" if n_clusters else ""
-            progress.update(t_graph, total=1, completed=1, info=cluster_info, right=graph_elapsed_str)
+            cluster_info = f"{n_clusters} topic clusters found" if n_clusters else "done"
+            progress.update(t_graph, total=1, completed=1, info=cluster_info)
 
+        cluster_str = f" · {n_clusters} topic clusters" if n_clusters else ""
+        console.print()
+        console.print(
+            f"  [bold]{stats['sessions']:,} sessions[/bold] · "
+            f"[bold]{stats['chunks']:,} chunks[/bold]"
+            f"[dim]{cluster_str}[/dim]"
+        )
         console.print()
         try:
             from flex.core import log_op
