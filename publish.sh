@@ -1,10 +1,12 @@
 #!/bin/bash
-# publish.sh — push filtered dev branch to public GitHub
+# publish.sh — push filtered dev branch to public GitHub + publish to PyPI
 # Private modules stripped, public gets a clean snapshot.
 #
 # Usage:
-#   ./publish.sh              # push to public remote
+#   ./publish.sh              # push to public remote + publish to PyPI
 #   ./publish.sh --dry-run    # show what would be removed, don't push
+#
+# PyPI token: store in ~/.flex/pypi-token (never commit)
 
 set -euo pipefail
 
@@ -86,3 +88,26 @@ git branch -D "$BRANCH"
 
 echo ""
 echo "Published to $REMOTE/$TARGET"
+
+# ── PyPI ──────────────────────────────────────────────────────────────────────
+PYPI_TOKEN_FILE="$HOME/.flex/pypi-token"
+
+if [[ ! -f "$PYPI_TOKEN_FILE" ]]; then
+    echo ""
+    echo "PyPI token not found at $PYPI_TOKEN_FILE — skipping PyPI publish."
+    echo "  echo '<your-token>' > $PYPI_TOKEN_FILE"
+    exit 0
+fi
+
+VERSION=$(grep '^version' pyproject.toml | head -1 | grep -oP '"\K[^"]+')
+echo "Building getflex==$VERSION for PyPI..."
+
+rm -rf dist/
+python -m build --quiet
+
+TWINE_USERNAME=__token__ \
+TWINE_PASSWORD="$(cat "$PYPI_TOKEN_FILE")" \
+twine upload dist/getflex-"$VERSION"* 2>&1
+
+echo ""
+echo "Published getflex==$VERSION to PyPI"
