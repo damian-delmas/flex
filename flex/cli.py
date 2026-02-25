@@ -445,7 +445,7 @@ def cmd_init(args):
             if not _has_gpu() and _est_unembedded > 10_000:
                 import threading as _threading
                 from flex.onnx.nomic_embed import NomicEmbedder as _NomicEmbedder
-                _flex_cfg = FLEX_HOME / "config"
+                _flex_cfg = FLEX_HOME / "secrets"
                 _saved_key = None
                 if _flex_cfg.exists():
                     for _line in _flex_cfg.read_text().splitlines():
@@ -465,7 +465,7 @@ def cmd_init(args):
                     console.print("  [dim]Note: chunks sent to Nomic's servers.[/dim]")
                     console.print("  Get a free key: [bold blue][link=https://atlas.nomic.ai/cli-login]atlas.nomic.ai/cli-login[/link][/bold blue]")
                     console.print()
-                    key = input("  Enter Nomic API key (or press Enter to use local CPU): ").strip()
+                    key = ''.join(c for c in input("  Enter Nomic API key (or press Enter to use local CPU): ") if c.isprintable()).strip()
                     if key:
                         _ne = _NomicEmbedder(key)
                         import sys as _sys

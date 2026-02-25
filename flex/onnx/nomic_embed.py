@@ -36,14 +36,19 @@ class NomicEmbedder:
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 return None  # key is valid, just rate limited
-            return f"HTTP {e.code}: {e.reason}"
+            try:
+                detail = json.loads(e.read().decode())
+                msg = detail.get("detail") or detail.get("message") or e.reason
+            except Exception:
+                msg = e.reason
+            return f"HTTP {e.code}: {msg}"
         except Exception as e:
             return str(e)
 
     def _post(self, texts: List[str], timeout: int = 30) -> List[List[float]]:
         """Single HTTP POST to the Nomic embed endpoint. Returns raw embeddings list."""
-        # Truncate to chunk ceiling — our chunks are ~528 chars, 2048 is a safe cap. Avoids 413.
-        texts = [t[:2048] for t in texts]
+        # Truncate + sanitize: strip null bytes and replace invalid UTF-8. Avoids 400/413.
+        texts = [t[:2048].replace('\x00', '').encode('utf-8', errors='replace').decode('utf-8') for t in texts]
         body = json.dumps({
             "texts": texts,
             "model": self.model,
@@ -83,6 +88,9 @@ class NomicEmbedder:
                         on_wait(delay)
                     time.sleep(delay)
                     delay = min(delay * 2, 60)  # cap at 60s
+                elif e.code == 400:
+                    # Bad request — return empty array so worker zip skips the write, chunks stay NULL
+                    return np.empty((0, 128), dtype=np.float32)
                 else:
                     raise
         raise RuntimeError("Nomic API: max retries exceeded (429)")
@@ -101,5 +109,9 @@ class NomicEmbedder:
         all_embs = []
         for i in range(0, len(sentences), self._batch_size):
             batch = sentences[i : i + self._batch_size]
-            all_embs.append(self._embed_batch(batch, on_wait=on_wait))
+            result = self._embed_batch(batch, on_wait=on_wait)
+            if len(result) > 0:
+                all_embs.append(result)
+        if not all_embs:
+            return np.empty((0, 128), dtype=np.float32)
         return np.vstack(all_embs)  # API returns unit-normalized vectors
