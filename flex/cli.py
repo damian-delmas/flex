@@ -63,6 +63,18 @@ def _install_hooks():
     return installed
 
 
+def _install_claude_assets():
+    """Copy agents and commands from package claude/ dir to ~/.claude/."""
+    _claude_src = PKG_ROOT / "claude"
+    if not _claude_src.exists():
+        return
+    for src in _claude_src.rglob("*.md"):
+        rel = src.relative_to(_claude_src)
+        dest = CLAUDE_DIR / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+
+
 def _patch_settings_json():
     """Non-destructively add hook entries to ~/.claude/settings.json."""
     settings_path = CLAUDE_DIR / "settings.json"
@@ -396,9 +408,10 @@ def cmd_init(args):
         console.print()
         return
 
-    # 3b. Hooks + settings
+    # 3b. Hooks + settings + claude assets
     _install_hooks()
     _patch_settings_json()
+    _install_claude_assets()
     console.print("  [dim]capture[/dim]             [green]ok[/green]")
     console.print()
 
