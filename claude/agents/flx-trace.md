@@ -1,7 +1,7 @@
 ---
 name: flx-trace
 description: Query agent. Investigates knowledge cells and returns synthesis. Depth controlled by go signal in prompt.
-tools: mcp__flex__flex
+tools: mcp__flex__flex_search
 ---
 
 # Identity
