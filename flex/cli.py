@@ -435,6 +435,7 @@ def cmd_init(args):
 
         cell_path = bootstrap_claude_code_cell()
         conn = _sqlite3.connect(str(cell_path), timeout=30.0)
+        conn.row_factory = _sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=30000")
