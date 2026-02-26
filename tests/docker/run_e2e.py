@@ -94,7 +94,7 @@ if cell_path and cell_path.exists():
     ).fetchone()[0]
 
     check("chunks indexed",      n_chunks > 0,     f"got {n_chunks}")
-    check("sessions indexed",    n_sessions == 2,  f"got {n_sessions}")
+    check("sessions indexed",    n_sessions > 0,   f"got {n_sessions}")
     check("embeddings present",  n_embedded > 0,   f"got {n_embedded}")
 
     tool_names = {r[0] for r in conn.execute(

@@ -35,6 +35,31 @@ from flex.registry import (
 # Configuration
 # ============================================================
 
+# SQLite authorizer for search pipe — whitelist read-only operations.
+# Action codes: https://www.sqlite.org/c3ref/c_alter_table.html
+_SQLITE_OK, _SQLITE_DENY = 0, 1
+_SEARCH_ALLOW = {
+    20,  # SQLITE_READ        — read column value
+    21,  # SQLITE_SELECT      — SELECT statement
+    31,  # SQLITE_FUNCTION    — use SQL function (incl. built-ins)
+    33,  # SQLITE_RECURSIVE   — recursive CTE
+}
+_BLOCKED_PRAGMAS = frozenset({
+    'database_list',      # leaks absolute file paths
+    'wal_checkpoint',     # triggers WAL operations
+    'integrity_check',    # full-DB scan, DoS vector
+    'quick_check',        # same
+    'writable_schema',    # dangerous config toggle
+    'query_only',         # config toggle
+})
+
+
+def _search_authorizer(action, arg1, arg2, db_name, trigger_name):
+    """Authorizer callback for search pipe. Allows reads + safe PRAGMAs only."""
+    if action == 19:  # SQLITE_PRAGMA
+        return _SQLITE_DENY if (arg1 or '').lower() in _BLOCKED_PRAGMAS else _SQLITE_OK
+    return _SQLITE_OK if action in _SEARCH_ALLOW else _SQLITE_DENY
+
 # ============================================================
 # Cell Management
 # ============================================================
@@ -311,14 +336,8 @@ def execute_query(db: sqlite3.Connection, query: str) -> str:
             return json.dumps({"error": err})
         upper = sql.upper()
 
-    # Read-only enforcement (ATTACH handled above via registry resolution)
-    write_keywords = ('INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE', 'ALTER',
-                      'DETACH', 'REINDEX', 'VACUUM')
-    for kw in write_keywords:
-        if upper.startswith(kw):
-            return json.dumps({"error": f"Write operations not allowed: {kw}"})
-
     # Materialize vec_ops() table sources into temp tables
+    # (runs BEFORE authorizer — trusted code that needs temp table writes)
     from flex.retrieve.vec_ops import materialize_vec_ops
     sql = materialize_vec_ops(db, sql)
 
@@ -326,12 +345,21 @@ def execute_query(db: sqlite3.Connection, query: str) -> str:
     if sql.startswith('{"error"'):
         return sql
 
+    # Read-only enforcement via SQLite authorizer
+    # Replaces the old startswith keyword check which was bypassable via
+    # CTE prefix (WITH x AS (DELETE ...) SELECT ...) or SQL comments.
     try:
+        db.set_authorizer(_search_authorizer)
         rows = db.execute(sql).fetchall()
         results = [dict(r) for r in rows]
         return json.dumps(results, indent=2, default=str)
-    except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
-        return json.dumps({"error": str(e)})
+    except sqlite3.DatabaseError as e:
+        err_str = str(e)
+        if 'not authorized' in err_str.lower():
+            return json.dumps({"error": "Write operations not allowed"})
+        return json.dumps({"error": err_str})
+    finally:
+        db.set_authorizer(None)
 
 
 # ============================================================
@@ -641,6 +669,8 @@ _QUERY_TIMEOUT_S = 30  # max seconds per query before cancellation
 _CHARS_PER_TOKEN = 3.5
 _GATE_TOKEN_LIMIT = 10_000  # gate results over ~10K tokens
 _GATE_CHAR_LIMIT = int(_GATE_TOKEN_LIMIT * _CHARS_PER_TOKEN)
+_GATE_FORCE_LIMIT = 100_000  # hard cap even with ! prefix (~350KB)
+_GATE_FORCE_CHAR_LIMIT = int(_GATE_FORCE_LIMIT * _CHARS_PER_TOKEN)
 _PREVIEW_ROWS = 10  # max rows in preview (actual count limited by char budget)
 _PREVIEW_FIELD_LIMIT = 200  # max chars per string field in preview
 _PREVIEW_CHAR_BUDGET = 2000  # max total chars for preview (~500 tokens)
@@ -794,6 +824,15 @@ async def handle_call_tool(
     if not force and est_tokens > _GATE_TOKEN_LIMIT:
         gated = _gate_response(result, header, row_count, est_tokens)
         return [types.TextContent(type="text", text=gated)]
+
+    # ! has a hard ceiling — never unbounded
+    if force and est_tokens > _GATE_FORCE_LIMIT:
+        truncated = result[:_GATE_FORCE_CHAR_LIMIT]
+        warning = (
+            f"\n\n[truncated at ~{_GATE_FORCE_LIMIT // 1000}K tokens — "
+            f"add LIMIT to query]"
+        )
+        return [types.TextContent(type="text", text=f"{header}\n{truncated}{warning}")]
 
     return [types.TextContent(type="text", text=f"{header}\n{result}")]
 

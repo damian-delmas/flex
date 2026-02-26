@@ -13,7 +13,10 @@ Doc-pac cells do NOT use these filters — 3-8 chunk sources are normal there.
 MIN_CHUNKS = 20
 
 # Minimum message_count for session summary enrichment
-MIN_MESSAGES = 5
+# Lowered from 5 → 2 to match Claude's own session filtering (user_message_count >= 2).
+# message_count is raw JSONL count (includes tool calls), so >= 2 still excludes
+# empty/abort sessions (0-1 messages) while capturing short but real sessions.
+MIN_MESSAGES = 2
 
 # Orchestrator detection threshold (agents spawned)
 ORCHESTRATOR_THRESHOLD = 5
