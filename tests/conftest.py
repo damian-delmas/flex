@@ -135,10 +135,13 @@ CREATE TABLE _types_message (
 CREATE TABLE _edges_delegations (
     id INTEGER PRIMARY KEY,
     chunk_id TEXT,
-    child_doc_id TEXT,
+    child_session_id TEXT,
     agent_type TEXT,
-    created_at INTEGER
+    created_at INTEGER,
+    parent_source_id TEXT
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_deleg_chunk_child
+    ON _edges_delegations(chunk_id, child_session_id);
 
 CREATE TABLE _edges_soft_ops (
     id INTEGER PRIMARY KEY,

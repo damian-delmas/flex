@@ -66,9 +66,11 @@ def _make_cell(tmp_path):
             success INTEGER, cwd TEXT, git_branch TEXT
         );
         CREATE TABLE _edges_delegations (
-            id INTEGER PRIMARY KEY, chunk_id TEXT, child_doc_id TEXT,
-            agent_type TEXT, created_at INTEGER
+            id INTEGER PRIMARY KEY, chunk_id TEXT, child_session_id TEXT,
+            agent_type TEXT, created_at INTEGER, parent_source_id TEXT
         );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_deleg_chunk_child
+            ON _edges_delegations(chunk_id, child_session_id);
         CREATE TABLE _edges_soft_ops (
             id INTEGER PRIMARY KEY, chunk_id TEXT, file_path TEXT,
             file_uuid TEXT, inferred_op TEXT, confidence TEXT
