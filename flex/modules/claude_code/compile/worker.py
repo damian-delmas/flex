@@ -299,6 +299,8 @@ def _ensure_core_tables(conn: sqlite3.Connection):
             created_at INTEGER,
             parent_source_id TEXT
         );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_deleg_chunk_child
+            ON _edges_delegations(chunk_id, child_session_id);
 
         CREATE TABLE IF NOT EXISTS _edges_soft_ops (
             id INTEGER PRIMARY KEY,
@@ -539,6 +541,8 @@ def sync_session_messages(session_id: str, conn: sqlite3.Connection,
     delegation_items = []     # (chunk_id, spawned_agent, ts)
     soft_ops_items = []       # (chunk_id, SoftFileOp)
     tool_use_id_map = {}      # tool_use.id -> tool_name
+    tool_use_to_chunk = {}    # tool_use.id -> chunk_id (for delegation resolution)
+    _seen_delegations = set() # dedup: agent ids already captured from progress entries
     snapshot_hashes = {}      # messageId -> {filepath: git_blob_hash}
 
     _ensure_content_tables(conn)
@@ -602,7 +606,25 @@ def sync_session_messages(session_id: str, conn: sqlite3.Connection,
                 """, (custom_title[:250], session_id))
             continue
 
-        # --- progress / system → skip ---
+        # --- progress → extract delegation signals (first per agent), then skip ---
+        if entry_type == 'progress':
+            data = entry.get('data', {})
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except (json.JSONDecodeError, TypeError):
+                    data = {}
+            agent_id = data.get('agentId', '') if isinstance(data, dict) else ''
+            parent_tuid = entry.get('parentToolUseID', '')
+            if agent_id and parent_tuid and parent_tuid in tool_use_to_chunk:
+                spawned = f"agent-{agent_id}"
+                if spawned not in _seen_delegations:
+                    _seen_delegations.add(spawned)
+                    parent_chunk = tool_use_to_chunk[parent_tuid]
+                    delegation_items.append((parent_chunk, spawned, ts_int, session_id))
+            continue
+
+        # --- system / other → skip ---
         if entry_type not in ('user', 'assistant'):
             continue
 
@@ -638,7 +660,9 @@ def sync_session_messages(session_id: str, conn: sqlite3.Connection,
                 elif item_type == 'tool_use':
                     tool_name = item.get('name', 'unknown')
                     tool_input = item.get('input', {})
-                    tool_use_id_map[item.get('id', '')] = tool_name
+                    tool_use_id = item.get('id', '')
+                    tool_use_id_map[tool_use_id] = tool_name
+                    tool_use_to_chunk[tool_use_id] = chunk_id
 
                     # Store full tool input in _raw_content
                     raw = json.dumps(tool_input)
@@ -1124,6 +1148,193 @@ def _check_and_sync_views(conn: sqlite3.Connection) -> None:
         print(f"[worker] Auto-synced views from {view_dir}", file=sys.stderr)
 
 
+def _heal_delegations(conn: sqlite3.Connection) -> int:
+    """Backfill delegation edges for sessions synced before progress-entry detection.
+
+    Finds sessions with Task tool_ops but no delegation edges, parses their
+    JONLs to extract delegation relationships, and inserts missing edges.
+    Handles two JSONL formats:
+      - New: agentId in progress entries, matched via parentToolUseID
+      - Old: agentId in user entries (Task result rendered as user message),
+             matched to preceding assistant Task tool_use by proximity
+    Idempotent — unique index on (chunk_id, child_session_id) prevents dupes.
+    """
+    gap_sessions = conn.execute("""
+        SELECT DISTINCT es.source_id
+        FROM _edges_tool_ops t
+        JOIN _edges_source es ON t.chunk_id = es.chunk_id
+        WHERE t.tool_name = 'Task'
+        AND es.source_id NOT IN (
+            SELECT DISTINCT parent_source_id
+            FROM _edges_delegations
+            WHERE parent_source_id IS NOT NULL
+        )
+    """).fetchall()
+
+    if not gap_sessions:
+        return 0
+
+    inserted = 0
+    for (session_id,) in gap_sessions:
+        jsonl_path = find_jsonl(session_id)
+        if not jsonl_path or not jsonl_path.exists():
+            continue
+
+        try:
+            with open(jsonl_path, 'r') as f:
+                content = f.read()
+        except Exception:
+            continue
+
+        if 'agentId' not in content:
+            continue
+
+        lines = content.split('\n')
+
+        # Collect Task tool_use blocks: tool_use_id -> (line_num, ts)
+        # and line_num -> tool_use_id for proximity matching
+        tool_use_info = {}   # tool_use_id -> (line_num, ts_int)
+        task_lines = []      # [(line_num, tool_use_id, ts_int)] ordered
+
+        for line_num_0, line in enumerate(lines):
+            line_num = line_num_0 + 1
+            if 'Task' not in line:
+                continue
+            try:
+                e = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if e.get('type') != 'assistant':
+                continue
+            ts_int = 0
+            timestamp = e.get('timestamp')
+            if timestamp:
+                try:
+                    dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    ts_int = int(dt.timestamp())
+                except Exception:
+                    pass
+            msg = e.get('message', {})
+            for block in msg.get('content', []):
+                if isinstance(block, dict) and block.get('type') == 'tool_use' \
+                        and block.get('name') == 'Task':
+                    tuid = block.get('id', '')
+                    tool_use_info[tuid] = (line_num, ts_int)
+                    task_lines.append((line_num, tuid, ts_int))
+
+        if not task_lines:
+            continue
+
+        # Strategy 1: progress entries (new format)
+        agent_to_parent = {}
+        for line in lines:
+            if 'agentId' not in line or 'progress' not in line:
+                continue
+            try:
+                e = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if e.get('type') != 'progress':
+                continue
+            data = e.get('data', {})
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+            aid = data.get('agentId', '') if isinstance(data, dict) else ''
+            ptuid = e.get('parentToolUseID', '')
+            if aid and ptuid and aid not in agent_to_parent:
+                agent_to_parent[aid] = ptuid
+
+        # Strategy 2: user entries with "agentId: xxx" (old format)
+        # Task results rendered as user messages with tool_result content.
+        # Match each to the nearest preceding Task tool_use line.
+        user_delegations = []  # (chunk_id, spawned, ts_int, session_id)
+        for line_num_0, line in enumerate(lines):
+            line_num = line_num_0 + 1
+            if 'agentId' not in line:
+                continue
+            try:
+                e = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if e.get('type') != 'user':
+                continue
+            # Search raw JSON — agentId can be nested in tool_result.content
+            agent_match = re.search(r'agentId: ([a-f0-9]+)', line)
+            if not agent_match:
+                continue
+            aid = agent_match.group(1)
+            # Match via tool_use_id in tool_result, fall back to proximity
+            msg = e.get('message', {})
+            msg_content = msg.get('content', [])
+            result_tuid = None
+            if isinstance(msg_content, list):
+                for item in msg_content:
+                    if isinstance(item, dict) and item.get('type') == 'tool_result':
+                        result_tuid = item.get('tool_use_id', '')
+                        break
+            best = None
+            if result_tuid and result_tuid in tool_use_info:
+                best = tool_use_info[result_tuid]
+            else:
+                for tl, tuid, ts in task_lines:
+                    if tl < line_num:
+                        best = (tl, ts)
+            if best:
+                chunk_id = f"{session_id}_{best[0]}"
+                spawned = f"agent-{aid}"
+                user_delegations.append((chunk_id, spawned, best[1], session_id))
+
+        # Merge: progress-based takes precedence, user-based fills remainder
+        seen = set()
+        delegation_pairs = []
+
+        for aid, ptuid in agent_to_parent.items():
+            if ptuid not in tool_use_info:
+                continue
+            line_num, ts_int = tool_use_info[ptuid]
+            chunk_id = f"{session_id}_{line_num}"
+            spawned = f"agent-{aid}"
+            key = (chunk_id, spawned)
+            if key not in seen:
+                seen.add(key)
+                delegation_pairs.append((chunk_id, spawned, ts_int, session_id))
+
+        for chunk_id, spawned, ts_int, sid in user_delegations:
+            key = (chunk_id, spawned)
+            if key not in seen:
+                seen.add(key)
+                delegation_pairs.append((chunk_id, spawned, ts_int, sid))
+
+        # Insert
+        for chunk_id, spawned, ts_int, sid in delegation_pairs:
+            exists = conn.execute(
+                "SELECT 1 FROM _raw_chunks WHERE id = ?", (chunk_id,)
+            ).fetchone()
+            if not exists:
+                continue
+            ensure_source_exists(conn, spawned)
+            try:
+                conn.execute("""
+                    INSERT OR IGNORE INTO _edges_delegations
+                    (chunk_id, child_session_id, agent_type, created_at, parent_source_id)
+                    VALUES (?, ?, NULL, ?, ?)
+                """, (chunk_id, spawned, ts_int, sid))
+                inserted += 1
+            except Exception:
+                pass
+
+    if inserted > 0:
+        conn.commit()
+        log_op(conn, 'heal_delegations', '_edges_delegations',
+               params={'inserted': inserted, 'gap_sessions': len(gap_sessions)})
+        conn.commit()
+
+    return inserted
+
+
 def _run_enrichment_cycle(conn, graph_threshold=50):
     """Run the enrichment cycle: graph (if stale), fingerprints, repo_project."""
     t0 = time.time()
@@ -1159,7 +1370,15 @@ def _run_enrichment_cycle(conn, graph_threshold=50):
         except Exception as e:
             print(f"[enrich] Repo project error: {e}", file=sys.stderr)
 
-    # 4. Queue depth snapshot — write to _ops for @health visibility
+    # 4. Heal delegation edges for sessions synced before progress-entry detection
+    try:
+        n = _heal_delegations(conn)
+        if n > 0:
+            print(f"[enrich] {n} delegation edges healed", file=sys.stderr)
+    except Exception as e:
+        print(f"[enrich] Delegation heal error: {e}", file=sys.stderr)
+
+    # 5. Queue depth snapshot — write to _ops for @health visibility
     try:
         qconn = sqlite3.connect(str(QUEUE_DB), timeout=5)
         cc_depth = qconn.execute("SELECT COUNT(*) FROM claude_code_pending").fetchone()[0]
@@ -1171,7 +1390,7 @@ def _run_enrichment_cycle(conn, graph_threshold=50):
     except Exception:
         pass  # non-critical metric
 
-    # 5. View auto-sync — install views if .sql files changed since last install
+    # 6. View auto-sync — install views if .sql files changed since last install
     try:
         _check_and_sync_views(conn)
     except Exception as e:
