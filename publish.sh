@@ -79,7 +79,8 @@ fi
 # Check out the existing public branch (preserves history)
 git checkout -B "$BRANCH" "$REMOTE/$TARGET"
 
-# Overlay all dev files onto the public branch
+# Replace index with dev tree exactly (adds + deletes)
+git read-tree dev
 git checkout dev -- .
 
 # Remove private files from index
