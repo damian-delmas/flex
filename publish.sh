@@ -1,12 +1,11 @@
 #!/bin/bash
-# publish.sh — push filtered dev branch to public GitHub + publish to PyPI
+# publish.sh — push filtered dev branch to public GitHub + tag for PyPI release
 # Private modules stripped, public gets a clean snapshot.
+# PyPI publishing is handled by GitHub Actions on tag push.
 #
 # Usage:
-#   ./publish.sh              # push to public remote + publish to PyPI
+#   ./publish.sh              # strip, push to public, push version tag
 #   ./publish.sh --dry-run    # show what would be removed, don't push
-#
-# PyPI token: store in ~/.flex/pypi-token (never commit)
 
 set -euo pipefail
 
@@ -51,7 +50,9 @@ if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
     exit 1
 fi
 
-echo "Publishing dev → $REMOTE/$TARGET"
+VERSION=$(grep '^version' pyproject.toml | head -1 | grep -oP '"\K[^"]+')
+
+echo "Publishing dev → $REMOTE/$TARGET (v$VERSION)"
 echo "Stripping ${#PRIVATE[@]} private paths"
 
 if $DRY_RUN; then
@@ -75,39 +76,18 @@ for p in "${PRIVATE[@]}"; do
     git rm -r --cached "$p" 2>/dev/null || true
 done
 
-# Commit
-VERSION=$(git describe --tags 2>/dev/null || echo "dev")
-git commit -m "release $VERSION"
+# Commit + tag
+git commit -m "release v$VERSION"
+git tag "v$VERSION"
 
-# Push
+# Push branch + tag
 git push "$REMOTE" "$BRANCH:$TARGET" --force
+git push "$REMOTE" "v$VERSION" --force
 
 # Cleanup
 git checkout -f dev
 git branch -D "$BRANCH"
+git tag -d "v$VERSION"
 
 echo ""
-echo "Published to $REMOTE/$TARGET"
-
-# ── PyPI ──────────────────────────────────────────────────────────────────────
-PYPI_TOKEN_FILE="$HOME/.flex/pypi-token"
-
-if [[ ! -f "$PYPI_TOKEN_FILE" ]]; then
-    echo ""
-    echo "PyPI token not found at $PYPI_TOKEN_FILE — skipping PyPI publish."
-    echo "  echo '<your-token>' > $PYPI_TOKEN_FILE"
-    exit 0
-fi
-
-VERSION=$(grep '^version' pyproject.toml | head -1 | grep -oP '"\K[^"]+')
-echo "Building getflex==$VERSION for PyPI..."
-
-rm -rf dist/
-python -m build 2>&1 | tail -3
-
-TWINE_USERNAME=__token__ \
-TWINE_PASSWORD="$(cat "$PYPI_TOKEN_FILE")" \
-twine upload dist/getflex-"$VERSION"* 2>&1
-
-echo ""
-echo "Published getflex==$VERSION to PyPI"
+echo "Published to $REMOTE/$TARGET — tag v$VERSION pushed, PyPI release triggered"
