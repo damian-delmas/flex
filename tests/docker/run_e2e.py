@@ -209,6 +209,10 @@ if shutil.which("flex-serve"):
     print("Starting flex-serve and testing vec_ops")
     print("=" * 60)
 
+    # Kill any leftover daemons from prior runs to avoid non-deterministic side effects
+    subprocess.run(["flex-serve", "--stop"], capture_output=True)
+    time.sleep(1)
+
     subprocess.Popen(["flex-serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(4)  # wait for VectorCache to warm
 
@@ -247,7 +251,7 @@ if shutil.which("flex-serve"):
         else:
             check(label, True)  # non-zero exit = blocked
 
-    # ── Orient query_surface structure ────────────────────────────────────────
+    # ── Orient structure ─────────────────────────────────────────────────────
     r_orient = subprocess.run(
         ["flex", "search", "--json", "@orient"],
         capture_output=True, text=True, timeout=15,
@@ -256,12 +260,61 @@ if shutil.which("flex-serve"):
           r_orient.stderr[:200] if r_orient.stderr else "")
     if r_orient.returncode == 0:
         try:
-            orient_out = r_orient.stdout
-            check("orient has query_surface",
-                  "query_surface" in orient_out or "view" in orient_out,
-                  f"first 300 chars: {orient_out[:300]}")
-        except Exception as e:
-            check("orient structure", False, str(e))
+            orient_data = json.loads(r_orient.stdout)
+            # orient returns {query: name, results: [...]} blocks
+            query_names = set()
+            all_results = []
+            if isinstance(orient_data, list):
+                for block in orient_data:
+                    if isinstance(block, dict) and "query" in block:
+                        query_names.add(block["query"])
+                        all_results.extend(block.get("results", []))
+
+            # No spurious "default" block
+            check("orient no default block",
+                  "default" not in query_names,
+                  f"query blocks: {sorted(query_names)}")
+
+            # No empty "retrieval" block
+            check("orient no retrieval block",
+                  "retrieval" not in query_names,
+                  f"query blocks: {sorted(query_names)}")
+
+            # query_surface has the three tiers: view, table_function, edge_table
+            surface_kinds = set()
+            for block in orient_data if isinstance(orient_data, list) else []:
+                if block.get("query") == "query_surface":
+                    for row in block.get("results", []):
+                        if isinstance(row, dict) and "kind" in row:
+                            surface_kinds.add(row["kind"])
+            check("orient query_surface has views",
+                  "view" in surface_kinds,
+                  f"kinds: {sorted(surface_kinds)}")
+            check("orient query_surface has table_function",
+                  "table_function" in surface_kinds,
+                  f"kinds: {sorted(surface_kinds)}")
+            check("orient query_surface has edge_table",
+                  "edge_table" in surface_kinds,
+                  f"kinds: {sorted(surface_kinds)}")
+
+            # about block has description (not empty)
+            about_has_desc = False
+            for block in orient_data if isinstance(orient_data, list) else []:
+                if block.get("query") == "about":
+                    for row in block.get("results", []):
+                        if isinstance(row, dict):
+                            # May be {description: "..."} or {key: "description", value: "..."}
+                            desc = row.get("description") or (
+                                row.get("value") if row.get("key") == "description" else None)
+                            if desc and desc.strip():
+                                about_has_desc = True
+            check("orient about has description", about_has_desc)
+
+        except json.JSONDecodeError:
+            check("orient json parse", False, f"raw: {r_orient.stdout[:300]}")
+
+# ── Cleanup ────────────────────────────────────────────────────────────────────
+subprocess.run(["flex-serve", "--stop"], capture_output=True)
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 print()
