@@ -30,6 +30,8 @@ PRIVATE=(
     tests/test_markdown.py
     tests/test_soma_module.py
     tests/test_unified_sync.py
+    publish.sh
+    bump.sh
 )
 
 DRY_RUN=false
