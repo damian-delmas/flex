@@ -17,7 +17,6 @@ TARGET="main"
 PRIVATE=(
     flex/modules/claude_chat
     flex/modules/docpac
-    flex/modules/soma
     flex/compile/docpac.py
     flex/compile/markdown.py
     views/claude_chat
@@ -28,14 +27,12 @@ PRIVATE=(
     tests/test_docpac_worker.py
     tests/test_fingerprint.py
     tests/test_markdown.py
-    tests/test_soma_module.py
     tests/test_unified_sync.py
     publish.sh
     bump.sh
     bin/flex
     flex/mcp_server.service
     flex/modules/claude_code/scripts
-    flex/modules/claude_code/manage/enrich_soma_repos.py
     flex/modules/claude_code/manage/backfill_metadata.py
     flex/modules/claude_code/resume.py
 )
