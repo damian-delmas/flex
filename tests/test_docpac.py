@@ -27,10 +27,11 @@ def _can_import():
         return False
 
 
-pytestmark = pytest.mark.skipif(
-    not _can_import(),
-    reason="flex.compile.docpac not yet implemented (Plan 1)"
-)
+pytestmark = [
+    pytest.mark.skipif(not _can_import(), reason="flex.compile.docpac not yet implemented (Plan 1)"),
+    pytest.mark.unit,
+    pytest.mark.docpac,
+]
 
 
 # =============================================================================

@@ -25,10 +25,10 @@ def _can_import():
         return False
 
 
-pytestmark = pytest.mark.skipif(
-    not _can_import(),
-    reason="flex.presets not yet implemented"
-)
+pytestmark = [
+    pytest.mark.skipif(not _can_import(), reason="flex.presets not yet implemented"),
+    pytest.mark.unit,
+]
 
 
 # =============================================================================

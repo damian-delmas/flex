@@ -21,7 +21,11 @@ try:
 except ImportError:
     HAS_WORKER = False
 
-pytestmark = pytest.mark.skipif(not HAS_WORKER, reason="docpac worker not importable")
+pytestmark = [
+    pytest.mark.skipif(not HAS_WORKER, reason="docpac worker not importable"),
+    pytest.mark.unit,
+    pytest.mark.docpac,
+]
 
 EMBED_DIM = 128
 

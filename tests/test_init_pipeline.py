@@ -16,6 +16,8 @@ import time
 import pytest
 from pathlib import Path
 
+pytestmark = [pytest.mark.pipeline]
+
 
 # ---------------------------------------------------------------------------
 # Minimal JSONL session fixtures

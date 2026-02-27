@@ -39,7 +39,10 @@ def _can_import():
         return False
 
 
-pytestmark = pytest.mark.skipif(not _can_import(), reason="flex not importable")
+pytestmark = [
+    pytest.mark.skipif(not _can_import(), reason="flex not importable"),
+    pytest.mark.pipeline,
+]
 
 
 # ---------------------------------------------------------------------------

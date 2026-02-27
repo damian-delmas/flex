@@ -18,6 +18,8 @@ Run with: pytest tests/test_markdown.py -v
 import pytest
 from flex.compile.markdown import normalize_headers, extract_frontmatter, split_sections
 
+pytestmark = [pytest.mark.unit]
+
 
 # =============================================================================
 # Header Normalization

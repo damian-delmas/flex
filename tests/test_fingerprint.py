@@ -16,6 +16,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+pytestmark = [pytest.mark.unit, pytest.mark.enrichment]
+
 FLEX_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(FLEX_ROOT))
 

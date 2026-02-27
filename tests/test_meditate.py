@@ -21,10 +21,11 @@ def _can_import():
         return False
 
 
-pytestmark = pytest.mark.skipif(
-    not _can_import(),
-    reason="flex.manage.meditate not yet implemented"
-)
+pytestmark = [
+    pytest.mark.skipif(not _can_import(), reason="flex.manage.meditate not yet implemented"),
+    pytest.mark.unit,
+    pytest.mark.enrichment,
+]
 
 EMBED_DIM = 128
 
