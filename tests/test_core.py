@@ -22,10 +22,10 @@ def _can_import_flex():
 
 
 # These imports will fail until Plan 1 creates the module
-pytestmark = pytest.mark.skipif(
-    not _can_import_flex(),
-    reason="flex.core not yet implemented (Plan 1)"
-)
+pytestmark = [
+    pytest.mark.skipif(not _can_import_flex(), reason="flex.core not yet implemented (Plan 1)"),
+    pytest.mark.unit,
+]
 
 
 # =============================================================================

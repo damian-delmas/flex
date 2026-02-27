@@ -66,8 +66,8 @@ def _install_hooks():
 
 
 def _install_claude_assets():
-    """Copy agents and commands from package claude/ dir to ~/.claude/."""
-    _claude_src = PKG_ROOT / "claude"
+    """Copy agents and commands from package ai/ dir to ~/.claude/."""
+    _claude_src = PKG_ROOT / "ai"
     if not _claude_src.exists():
         return
     for src in _claude_src.rglob("*.md"):
@@ -357,6 +357,7 @@ def cmd_init(args):
     import sqlite3 as _sqlite3
 
     console = Console()
+    _warnings: list[str] = []  # accumulate phase failures for exit code
 
     console.print()
     console.print("  [bold]Setting up flex...[/bold]")
@@ -366,6 +367,18 @@ def cmd_init(args):
     FLEX_HOME.mkdir(parents=True, exist_ok=True)
     (FLEX_HOME / "cells").mkdir(exist_ok=True)
 
+    # Auto-migrate queue.db from 2-col to 3-col schema (pre-0.2.0 installs)
+    _qdb = FLEX_HOME / "queue.db"
+    if _qdb.exists():
+        try:
+            _qconn = _sqlite3.connect(str(_qdb), timeout=5)
+            _qcols = [r[1] for r in _qconn.execute("PRAGMA table_info(claude_code_pending)")]
+            if _qcols and "payload" not in _qcols:
+                _qconn.execute("DROP TABLE claude_code_pending")
+                _qconn.commit()
+            _qconn.close()
+        except Exception:
+            pass  # queue.db is transient — worst case recreated by next hook
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
@@ -378,20 +391,26 @@ def cmd_init(args):
             from flex.modules.soma.lib.eternity.eternity import Eternity
             Eternity()
         except ImportError:
-            pass
+            pass  # SOMA optional — keep silent
+        except Exception as e:
+            print(f"[init] SOMA init: {e}", file=sys.stderr)
 
     console.print("  [dim]storage[/dim]             [green]ok[/green]")
 
     # 2. Model
     from flex.onnx.fetch import download_model, model_ready
+    _model_ok = True
     if not model_ready():
         console.print("  [dim]model[/dim]               [yellow]downloading...[/yellow]")
         try:
             download_model()
         except RuntimeError as e:
-            console.print(f"  [red]model download failed: {e}[/red]")
-            return
-    console.print("  [dim]model[/dim]               [green]ok[/green]")
+            console.print(f"  [yellow]model[/yellow]               [yellow]failed: {e}[/yellow]")
+            console.print(f"  [dim]SQL and FTS will work. Rerun flex init to retry download.[/dim]")
+            _model_ok = False
+            _warnings.append(f"Model download: {e}")
+    if _model_ok:
+        console.print("  [dim]model[/dim]               [green]ok[/green]")
 
     # 3. Pre-flight: check system deps before doing anything
     import shutil as _shutil, os as _os
@@ -445,8 +464,25 @@ def cmd_init(args):
             conn.execute(ddl)
         conn.commit()
 
-        # Seed from existing cell for resume display
+        # Install views + presets early (only need stub tables to exist)
+        try:
+            from flex.views import install_views as _iv, regenerate_views as _rv
+            from flex.manage.install_presets import install_cell as _install_presets_cell
+            _vd = _find_view_dir('claude_code', 'claude-code')
+            if _vd:
+                _iv(conn, _vd)
+            _rv(conn)
+            _install_presets_cell('claude_code')
+            conn.commit()
+        except Exception as e:
+            print(f"[init] Views/presets install failed: {e}", file=sys.stderr)
+            _warnings.append(f"Views/presets: {e}")
+
+        # Seed from existing cell for resume display — show resume hint
         _already = conn.execute("SELECT COUNT(*) FROM _raw_sources").fetchone()[0]
+        if _already > 0:
+            console.print(f"  [dim]({_already:,} already indexed, resuming)[/dim]")
+            console.print()
         _existing_chunks = conn.execute("SELECT COUNT(*) FROM _raw_chunks").fetchone()[0]
         _already_embedded = conn.execute(
             "SELECT COUNT(*) FROM _raw_chunks WHERE embedding IS NOT NULL"
@@ -456,11 +492,12 @@ def cmd_init(args):
         _nomic_embedder = [None]  # set below if user provides a Nomic API key
 
         # Prompt for Nomic key BEFORE scanning so user can walk away.
+        # Skip entirely if model download failed — no point prompting.
         # Estimate unembedded chunks from unprocessed session count (avg ~50 chunks/session).
         _est_unembedded = (_existing_chunks - _already_embedded) + (len(jsonls) - _already) * 50
         try:
             from flex.onnx.embed import has_gpu as _has_gpu
-            if not _has_gpu() and _est_unembedded > 10_000:
+            if _model_ok and not _has_gpu() and _est_unembedded > 10_000:
                 import threading as _threading
                 from flex.onnx.nomic_embed import NomicEmbedder as _NomicEmbedder
                 _flex_cfg = FLEX_HOME / "secrets"
@@ -533,8 +570,9 @@ def cmd_init(args):
                             _lines.append(f"NOMIC_API_KEY={key}")
                             _flex_cfg.write_text("\n".join(_lines) + "\n")
                     console.print()
-        except Exception:
-            pass  # any failure → fall through to local ONNX
+        except Exception as e:
+            print(f"[init] Nomic setup: {e}", file=sys.stderr)
+            # fall through to local ONNX
 
         with Progress(
             TextColumn("  [dim]{task.description:<20}[/dim]"),
@@ -600,16 +638,34 @@ def cmd_init(args):
 
             buf2 = io.StringIO()
             with contextlib.redirect_stderr(buf2):
-                stats = initial_backfill(conn, progress_cb=_progress, phase2_cb=_phase2,
-                                         quiet_embed=True, embed_progress_cb=_embed_progress,
-                                         embedder_ref=_nomic_embedder)
+                try:
+                    stats = initial_backfill(conn, progress_cb=_progress, phase2_cb=_phase2,
+                                             quiet_embed=True, embed_progress_cb=_embed_progress,
+                                             embedder_ref=_nomic_embedder,
+                                             skip_embed=not _model_ok)
+                except Exception as e:
+                    console.print(f"  [yellow]Backfill error: {e}[/yellow]")
+                    _warnings.append(f"Backfill: {e}")
+                    stats = {'sessions': _phase.get('sessions', 0),
+                             'chunks': _phase.get('chunks', 0),
+                             'elapsed': 0, 'embed_ok': False}
 
-            progress.update(t_index, completed=stats['chunks'], total=stats['chunks'],
-                            info=f"{stats['chunks']:,} chunks embedded")
+            if not stats.get('embed_ok', True):
+                _warnings.append("Embedding incomplete — vec_ops disabled until re-embedded")
+                progress.update(t_index, completed=stats['chunks'], total=stats['chunks'],
+                                info=f"{stats['chunks']:,} chunks (embedding skipped)")
+            else:
+                progress.update(t_index, completed=stats['chunks'], total=stats['chunks'],
+                                info=f"{stats['chunks']:,} chunks embedded")
 
             # Graph + enrichment (spinner, fully silent)
             progress.update(t_graph, visible=True, info="analyzing...")
-            n_clusters, _enrich_failures = _run_enrichment_quiet(conn)
+            try:
+                n_clusters, _enrich_failures = _run_enrichment_quiet(conn)
+            except Exception as e:
+                console.print(f"  [yellow]Enrichment error: {e}[/yellow]")
+                _warnings.append(f"Enrichment: {e}")
+                n_clusters, _enrich_failures = 0, []
             cluster_info = f"{n_clusters} topic clusters found" if n_clusters else "done"
             progress.update(t_graph, total=1, completed=1, info=cluster_info)
 
@@ -620,17 +676,14 @@ def cmd_init(args):
             + (f" · [bold]{n_clusters}[/bold] topic clusters" if n_clusters else "")
         )
         if _enrich_failures:
-            console.print()
             for _f in _enrich_failures:
-                console.print(f"  [yellow]⚠  {_f} skipped[/yellow]")
-            console.print()
-            console.print("  [dim]Re-run [bold]flex init[/bold] after fixing the above.[/dim]")
+                _warnings.append(f"Enrichment: {_f} skipped")
         console.print()
         try:
             from flex.core import log_op
             log_op(conn, 'init_complete', 'claude_code', rows_affected=stats['chunks'])
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[init] log_op: {e}", file=sys.stderr)
 
         try:
             from tzlocal import get_localzone
@@ -683,6 +736,15 @@ def cmd_init(args):
     console.print("    [dim]goooooooo    exhaustive[/dim]")
     console.print()
 
+    # Exit code: 0 = full success, 1 = partial completion
+    if _warnings:
+        console.print(f"  [yellow]Completed with {len(_warnings)} warning(s):[/yellow]")
+        for w in _warnings:
+            console.print(f"    [dim]- {w}[/dim]")
+        console.print()
+        console.print("  [dim]Run[/dim] [bold]flex sync[/bold] [dim]to repair, or[/dim] [bold]flex init[/bold] [dim]to retry.[/dim]")
+        console.print()
+        sys.exit(1)
 
 
 # ============================================================
@@ -998,8 +1060,8 @@ def cmd_sync(args):
                 conn.execute(ddl)
             conn.commit()
             conn.close()
-        except Exception:
-            pass  # best-effort
+        except Exception as e:
+            print(f"  {name}: STUB FAILED ({e})")
 
     # ---- Phase 2: Curated views ----
     print()
@@ -1057,6 +1119,19 @@ def cmd_sync(args):
     # ---- Phase 4: Services ----
     print()
     print("[4/4] Services")
+
+    # Install systemd units if missing (recovery from partial init)
+    if sys.platform == "linux":
+        worker_unit = SYSTEMD_DIR / "flex-worker.service"
+        if not worker_unit.exists():
+            print("  Installing missing systemd units...")
+            try:
+                _install_systemd()
+            except Exception as e:
+                print(f"  systemd install FAILED: {e}")
+        elif "flex.modules.claude_code.compile.worker" not in worker_unit.read_text():
+            pass  # custom unit — don't overwrite
+
     for service in ["flex-worker", "flex-mcp"]:
         try:
             subprocess.run(
@@ -1068,6 +1143,19 @@ def cmd_sync(args):
             print(f"  {service}: FAILED ({e.stderr.decode().strip()})")
         except FileNotFoundError:
             print(f"  {service}: SKIP (systemctl not found)")
+
+    # Install MCP wiring if missing (recovery from partial init)
+    try:
+        if CLAUDE_JSON.exists():
+            _cfg = json.loads(CLAUDE_JSON.read_text())
+            if "flex" not in _cfg.get("mcpServers", {}):
+                print("  MCP wiring: adding (missing from init)")
+                _patch_claude_json()
+        else:
+            print("  MCP wiring: creating ~/.claude.json")
+            _patch_claude_json()
+    except Exception as e:
+        print(f"  MCP wiring: FAILED ({e})")
 
     # ---- Optional: Full enrichment rebuild ----
     if args.full:

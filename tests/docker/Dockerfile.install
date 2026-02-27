@@ -1,0 +1,41 @@
+# Install-path test — simulates a fresh user running:
+#   pip install getflex && flex init
+#
+# Tests the REAL PyPI package, not local source.
+#
+# Build:
+#   docker build -f tests/docker/Dockerfile.install -t flex-install .
+#
+# Run (full — downloads model from GitHub release):
+#   docker run --rm flex-install
+#
+# Run (fast — mount model cache to skip 87MB download):
+#   docker run --rm -v ~/.flex/models:/root/.flex/models:ro flex-install
+
+FROM ubuntu:24.04
+
+# ── System deps ──────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-dev \
+    python3.12-venv \
+    python3-pip \
+    build-essential \
+    git \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /test
+
+# ── Install from PyPI (the real user path) ───────────────────────────────────
+RUN pip3 install --break-system-packages "getflex[mcp,cluster]"
+
+# ── Seed mock sessions ──────────────────────────────────────────────────────
+COPY tests/docker/seed_sessions.py /seed_sessions.py
+RUN python3 /seed_sessions.py
+
+# ── Test harness + runner ─────────────────────────────────────────────────────
+COPY tests/docker/harness.py /harness.py
+COPY tests/docker/run_install.py /run_install.py
+
+CMD ["python3", "/run_install.py"]

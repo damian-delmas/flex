@@ -1,0 +1,34 @@
+# Upgrade path test — installs old PyPI version, populates, upgrades to local source.
+#
+# Build:
+#   docker build -f tests/docker/Dockerfile.upgrade -t flex-test-upgrade .
+#
+# Run:
+#   docker run --rm -v ~/.flex/models:/root/.flex/models:ro flex-test-upgrade
+
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-dev \
+    python3.12-venv \
+    python3-pip \
+    build-essential \
+    git \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /flex
+
+# Copy local source (upgrade target)
+COPY pyproject.toml ./
+COPY flex/ ./flex/
+
+# Seed sessions + harness
+COPY tests/docker/seed_sessions.py /seed_sessions.py
+COPY tests/docker/harness.py /harness.py
+RUN python3 /seed_sessions.py
+
+COPY tests/docker/run_upgrade.py /run_upgrade.py
+
+CMD ["python3", "/run_upgrade.py"]

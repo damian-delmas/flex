@@ -1067,7 +1067,8 @@ def _batch_embed_chunks(conn, batch_size: int = 500, quiet: bool = False,
 
 def initial_backfill(conn, progress_cb=None, phase2_cb=None,
                      commit_every: int = 50, quiet_embed: bool = False,
-                     embed_progress_cb=None, embedder_ref=None) -> dict:
+                     embed_progress_cb=None, embedder_ref=None,
+                     skip_embed: bool = False) -> dict:
     """Backfill all sessions with batched commits and progress.
 
     Decoupled two-phase approach:
@@ -1082,9 +1083,10 @@ def initial_backfill(conn, progress_cb=None, phase2_cb=None,
         commit_every: Commit after this many sessions (default 50). Higher = fewer fsyncs,
                       faster on overlay2/Docker. All inserts use INSERT OR IGNORE so
                       re-parsing uncommitted sessions on crash is safe.
+        skip_embed: If True, skip Phase 2 entirely (model unavailable).
 
     Returns:
-        dict with sessions, chunks, elapsed.
+        dict with sessions, chunks, elapsed, embed_ok.
     """
     jsonls = list(CLAUDE_PROJECTS.rglob("*.jsonl"))
 
@@ -1116,14 +1118,26 @@ def initial_backfill(conn, progress_cb=None, phase2_cb=None,
         if progress_cb:
             progress_cb(i, total, sessions, chunks, time.time() - t0)
 
-    # Phase 2: batch embed all NULL-embedding chunks
+    # Phase 2: batch embed all NULL-embedding chunks (non-fatal)
+    embed_ok = True
     if phase2_cb:
         phase2_cb(sessions, chunks, time.time() - t0)
-    _embedder = embedder_ref[0] if embedder_ref is not None else None
-    _batch_embed_chunks(conn, quiet=quiet_embed, progress_cb=embed_progress_cb,
-                        embedder=_embedder)
 
-    return {'sessions': sessions, 'chunks': chunks, 'elapsed': time.time() - t0}
+    if skip_embed:
+        embed_ok = False
+    else:
+        try:
+            _embedder = embedder_ref[0] if embedder_ref is not None else None
+            _batch_embed_chunks(conn, quiet=quiet_embed, progress_cb=embed_progress_cb,
+                                embedder=_embedder)
+        except Exception as e:
+            print(f"[init] Embedding failed: {e}", file=sys.stderr)
+            print("[init] Chunks saved. vec_ops disabled until re-embedded.", file=sys.stderr)
+            conn.commit()  # persist whatever embeds landed
+            embed_ok = False
+
+    return {'sessions': sessions, 'chunks': chunks, 'elapsed': time.time() - t0,
+            'embed_ok': embed_ok}
 
 
 def _cc_graph_stale(conn, threshold=50):
@@ -1487,7 +1501,8 @@ def daemon_loop(interval=2):
     qconn = sqlite3.connect(str(QUEUE_DB), timeout=5)
     qconn.execute("PRAGMA journal_mode=WAL")
     qconn.execute("""CREATE TABLE IF NOT EXISTS claude_code_pending (
-        session_id TEXT PRIMARY KEY, ts INTEGER)""")
+        session_id TEXT NOT NULL, ts INTEGER NOT NULL, payload TEXT NOT NULL)""")
+    qconn.execute("CREATE INDEX IF NOT EXISTS idx_claude_code_ts ON claude_code_pending(ts)")
     qconn.execute("""CREATE TABLE IF NOT EXISTS pending (
         path TEXT PRIMARY KEY, ts INTEGER)""")
     qconn.commit()

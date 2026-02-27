@@ -14,6 +14,8 @@ import sqlite3
 import pytest
 from pathlib import Path
 
+pytestmark = [pytest.mark.unit]
+
 
 # All tables that must exist after bootstrap + stubs, before any enrichment.
 # Divided by source so failures are easy to diagnose.

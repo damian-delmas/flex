@@ -45,8 +45,10 @@ RUN python3 /seed_sessions.py
 COPY tests/docker/flex-serve.sh /usr/local/bin/flex-serve
 RUN chmod +x /usr/local/bin/flex-serve
 
-# ── Test runner ───────────────────────────────────────────────────────────────
-# Runs flex init and asserts all E2E invariants.
+# ── Test harness + runners ───────────────────────────────────────────────────
+COPY tests/docker/harness.py /harness.py
 COPY tests/docker/run_e2e.py /run_e2e.py
+COPY tests/docker/run_install_degraded.py /run_install_degraded.py
+COPY tests/docker/run_ux.py /run_ux.py
 
 CMD ["python3", "/run_e2e.py"]

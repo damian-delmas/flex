@@ -1,6 +1,6 @@
 [project]
 name = "getflex"
-version = "0.1.43"
+version = "0.2.0"
 description = "SQLite knowledge engine for AI Agents"
 license = { text = "MIT" }
 requires-python = ">=3.12"
@@ -38,7 +38,7 @@ flex = [
     "retrieve/presets/general/*.sql",
     "onnx/*.json",
     "onnx/vocab.txt",
-    "claude/**/*.md",
+    "ai/**/*.md",
 ]
 
 [tool.setuptools.exclude-package-data]
@@ -46,6 +46,19 @@ flex = ["onnx/model.onnx", "onnx/model.onnx.data"]
 
 [tool.setuptools.packages.find]
 include = ["flex*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: In-memory SQLite, no external deps",
+    "pipeline: Needs ONNX model on disk",
+    "security: Authorizer and input validation",
+    "vec_ops: Vector operations and search",
+    "enrichment: Graph, fingerprint, delegation",
+    "sync: Unified sync pipeline",
+    "docpac: Doc-pac module",
+    "soma: SOMA identity module",
+]
 
 [build-system]
 requires = ["setuptools>=68.0"]

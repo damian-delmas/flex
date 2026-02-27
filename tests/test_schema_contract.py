@@ -10,6 +10,10 @@ Run with: pytest tests/test_schema_contract.py -v
 import sqlite3
 import struct
 
+import pytest
+
+pytestmark = [pytest.mark.unit]
+
 EMBED_DIM = 128
 
 
