@@ -38,7 +38,7 @@ flex = [
     "retrieve/presets/general/*.sql",
     "onnx/*.json",
     "onnx/vocab.txt",
-    "claude/**/*.md",
+    "ai/**/*.md",
 ]
 
 [tool.setuptools.exclude-package-data]

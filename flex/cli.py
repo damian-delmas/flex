@@ -66,8 +66,8 @@ def _install_hooks():
 
 
 def _install_claude_assets():
-    """Copy agents and commands from package claude/ dir to ~/.claude/."""
-    _claude_src = PKG_ROOT / "claude"
+    """Copy agents and commands from package ai/ dir to ~/.claude/."""
+    _claude_src = PKG_ROOT / "ai"
     if not _claude_src.exists():
         return
     for src in _claude_src.rglob("*.md"):
