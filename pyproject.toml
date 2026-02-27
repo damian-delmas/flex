@@ -1,0 +1,52 @@
+[project]
+name = "getflex"
+version = "0.1.43"
+description = "SQLite knowledge engine for AI Agents"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "networkx",
+    "scikit-learn",
+    "onnxruntime",
+    "tokenizers",
+    "rich",
+    "tzlocal",
+    "mcp",
+    "starlette",
+    "uvicorn",
+    "hdbscan",
+]
+
+[project.optional-dependencies]
+relay = ["websockets"]
+
+[project.scripts]
+flex = "flex.cli:main"
+
+[tool.setuptools.package-data]
+flex = [
+    "modules/claude_code/compile/hooks/*.sh",
+    "modules/docpac/compile/hooks/*.sh",
+    "modules/claude_code/stock/presets/*.sql",
+    "modules/claude_code/stock/views/*.sql",
+    "modules/claude_chat/stock/views/*.sql",
+    "modules/docpac/stock/views/*.sql",
+    "modules/soma/stock/presets/*.sql",
+    "modules/soma/**/*.sql",
+    "modules/soma/*.sql",
+    "retrieve/presets/general/*.sql",
+    "onnx/*.json",
+    "onnx/vocab.txt",
+    "claude/**/*.md",
+]
+
+[tool.setuptools.exclude-package-data]
+flex = ["onnx/model.onnx", "onnx/model.onnx.data"]
+
+[tool.setuptools.packages.find]
+include = ["flex*"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"

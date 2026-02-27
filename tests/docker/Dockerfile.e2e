@@ -1,0 +1,52 @@
+# E2E test image — simulates a fresh Ubuntu user running flex init.
+#
+# Build:
+#   docker build -f tests/docker/Dockerfile.e2e -t flex-e2e .
+#
+# Run (mount models to skip ~90MB download):
+#   docker run --rm \
+#     -v ~/.flex/models:/root/.flex/models:ro \
+#     -e TZ=$(cat /etc/timezone 2>/dev/null || timedatectl show -p Timezone --value 2>/dev/null || echo UTC) \
+#     flex-e2e
+#
+# Run (without models — will download):
+#   docker run --rm \
+#     -e TZ=$(cat /etc/timezone 2>/dev/null || timedatectl show -p Timezone --value 2>/dev/null || echo UTC) \
+#     flex-e2e
+
+FROM ubuntu:24.04
+
+# ── System deps ──────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-dev \
+    python3.12-venv \
+    python3-pip \
+    build-essential \
+    git \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Working dir ───────────────────────────────────────────────────────────────
+WORKDIR /flex
+
+# ── Install package (editable from local source, no venv) ─────────────────────
+COPY pyproject.toml ./
+COPY flex/ ./flex/
+
+RUN pip3 install --break-system-packages -e ".[mcp,cluster]"
+
+# ── Seed mock Claude Code sessions ────────────────────────────────────────────
+# Creates ~/.claude/projects/-home-testuser-myapp/{session}.jsonl
+COPY tests/docker/seed_sessions.py /seed_sessions.py
+RUN python3 /seed_sessions.py
+
+# ── flex-serve helper ─────────────────────────────────────────────────────
+COPY tests/docker/flex-serve.sh /usr/local/bin/flex-serve
+RUN chmod +x /usr/local/bin/flex-serve
+
+# ── Test runner ───────────────────────────────────────────────────────────────
+# Runs flex init and asserts all E2E invariants.
+COPY tests/docker/run_e2e.py /run_e2e.py
+
+CMD ["python3", "/run_e2e.py"]
