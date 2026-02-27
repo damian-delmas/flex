@@ -23,6 +23,103 @@ def mirror_instructions():
     print(f"  {out.relative_to(ROOT)}  ({len(text)} chars)")
 
 
+def _fmt_single(rows):
+    """Single-value blocks (now, about)."""
+    return [str(list(rows[0].values())[0])]
+
+
+def _fmt_shape(rows):
+    return [f"{r['what']}: {r['n']:,}" for r in rows]
+
+
+def _fmt_query_surface(rows):
+    lines = []
+    groups = {}
+    for r in rows:
+        groups.setdefault(r["kind"], []).append(r)
+
+    order = ["view", "table_function", "edge_table"]
+    labels = {"view": "Views (primary query surface)",
+              "table_function": "Table Functions",
+              "edge_table": "Edge Tables (explicit JOIN when views aren't enough)"}
+
+    for kind in order:
+        items = groups.get(kind, [])
+        if not items:
+            continue
+        lines.append(f"**{labels.get(kind, kind)}**")
+        lines.append("")
+        for r in items:
+            lines.append(f"- `{r['name']}` — {r['columns']}")
+            if r.get("note"):
+                lines.append(f"  {r['note']}")
+        lines.append("")
+    return lines
+
+
+def _fmt_hubs(rows):
+    lines = ["| session | centrality | community | label |",
+             "|---------|------------|-----------|-------|"]
+    for r in rows:
+        sid = r["session_id"][:8]
+        label = r.get("label", "")
+        # Truncate label for readability
+        if len(label) > 80:
+            label = label[:77] + "..."
+        label = label.replace("\n", " ").replace("|", "\\|")
+        lines.append(f"| `{sid}` | {r['centrality']:.4f} | {r.get('community', '')} | {label} |")
+    return lines
+
+
+def _fmt_communities(rows):
+    lines = ["| id | label | sub_labels | sources |",
+             "|----|-------|------------|---------|"]
+    for r in rows:
+        lines.append(f"| {r['community_id']} | {r['label']} | {r.get('sub_labels', '')} | {r['sources']} |")
+    return lines
+
+
+def _fmt_presets(rows):
+    lines = ["| preset | description | params |",
+             "|--------|-------------|--------|"]
+    for r in rows:
+        params = r.get("params", "")
+        lines.append(f"| `@{r['name']}` | {r['description']} | {params} |")
+    return lines
+
+
+def _fmt_coverage(rows):
+    lines = ["| field | coverage | note |",
+             "|-------|----------|------|"]
+    for r in rows:
+        lines.append(f"| {r['field']} | {r['coverage']} | {r.get('note', '')} |")
+    return lines
+
+
+def _fmt_sample(rows):
+    lines = []
+    for r in rows:
+        preview = r.get("preview", str(list(r.values())[0]))
+        lines.append("```")
+        lines.append(preview)
+        lines.append("```")
+        lines.append("")
+    return lines
+
+
+def _fmt_table(rows):
+    """Generic fallback — markdown table from row dicts."""
+    if not rows:
+        return ["*(empty)*"]
+    keys = list(rows[0].keys())
+    lines = ["| " + " | ".join(keys) + " |",
+             "| " + " | ".join("---" for _ in keys) + " |"]
+    for r in rows:
+        vals = [str(r.get(k, "")).replace("|", "\\|").replace("\n", " ") for k in keys]
+        lines.append("| " + " | ".join(vals) + " |")
+    return lines
+
+
 def mirror_orient():
     from flex.registry import resolve_cell
     from flex.core import open_cell
