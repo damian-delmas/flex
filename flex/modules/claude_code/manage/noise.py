@@ -18,6 +18,11 @@ MIN_CHUNKS = 20
 # empty/abort sessions (0-1 messages) while capturing short but real sessions.
 MIN_MESSAGES = 2
 
+# Warmup detection: sessions with fewer than this many JSONL messages are warmup.
+# Catches /mcp reconnects (0-1 msgs), aborted sessions, empty agent spawns.
+# Reactive: worker evaluates per-session at sync time, not in batch.
+WARMUP_MESSAGE_THRESHOLD = 5
+
 # Orchestrator detection threshold (agents spawned)
 ORCHESTRATOR_THRESHOLD = 5
 

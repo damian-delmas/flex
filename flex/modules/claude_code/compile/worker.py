@@ -74,6 +74,34 @@ except ImportError:
 QUEUE_DB = FLEX_HOME / "queue.db"
 CLAUDE_PROJECTS = Path.home() / ".claude/projects"
 
+# Warmup threshold — imported at module level for fast per-session checks
+try:
+    from flex.modules.claude_code.manage.noise import WARMUP_MESSAGE_THRESHOLD
+except ImportError:
+    WARMUP_MESSAGE_THRESHOLD = 5
+
+
+def _update_warmup(conn: sqlite3.Connection, session_id: str):
+    """Reactive warmup classification for a single session.
+
+    Called after every sync_session_messages(). If the session has grown
+    past the warmup threshold, remove it from the warmup table (flip OFF).
+    If it's below threshold, mark it as warmup (flip ON).
+    """
+    row = conn.execute(
+        "SELECT message_count FROM _raw_sources WHERE source_id = ?",
+        (session_id,)
+    ).fetchone()
+    if row is None:
+        return
+    is_warmup = 1 if row[0] < WARMUP_MESSAGE_THRESHOLD else 0
+    conn.execute("""
+        INSERT INTO _types_source_warmup (source_id, is_warmup_only)
+        VALUES (?, ?)
+        ON CONFLICT(source_id) DO UPDATE SET is_warmup_only = excluded.is_warmup_only
+    """, (session_id, is_warmup))
+
+
 # View directory resolution for auto-sync (user library takes precedence over stock)
 _USER_VIEW_DIR  = FLEX_HOME / 'views' / 'claude_code'
 _STOCK_VIEW_DIR = Path(__file__).parent.parent / 'stock' / 'views'
@@ -905,6 +933,10 @@ def process_queue(conn: sqlite3.Connection) -> dict:
     for session_id in session_ids:
         try:
             embedded += sync_session_messages(session_id, conn)
+            # Reactive warmup: reclassify after every sync.
+            # Sessions grow as they run — a session classified as warmup
+            # at message 2 may have 200 messages by the next sync.
+            _update_warmup(conn, session_id)
         except Exception as e:
             print(f"[worker] Error syncing {session_id[:8]}: {e}", file=sys.stderr)
 
@@ -1390,12 +1422,19 @@ def _run_enrichment_cycle(conn, graph_threshold=50):
         except Exception as e:
             print(f"[enrich] Reembed error: {e}", file=sys.stderr)
 
-    # 2. Graph rebuild if stale (≥50 new sessions since last build)
+    # 2. Warmup rebuild — unconditional, decoupled from graph staleness.
+    # Per-session reactive updates happen in process_queue via _update_warmup(),
+    # but the batch rebuild catches anything missed (e.g. backfill sessions).
+    if rebuild_warmup_types:
+        try:
+            rebuild_warmup_types(conn)
+        except Exception as e:
+            print(f"[enrich] Warmup rebuild error: {e}", file=sys.stderr)
+
+    # 3. Graph rebuild if stale (≥50 new sessions since last build)
     if rebuild_source_graph and _cc_graph_stale(conn, graph_threshold):
         print("[enrich] Graph stale — rebuilding...", file=sys.stderr)
         try:
-            if rebuild_warmup_types:
-                rebuild_warmup_types(conn)
             rebuild_source_graph(conn)
             # Community labels depend on graph — rebuild immediately after
             if rebuild_community_labels:

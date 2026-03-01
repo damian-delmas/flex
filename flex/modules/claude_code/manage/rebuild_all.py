@@ -30,11 +30,15 @@ GRAPH_THRESHOLD = 0.55
 
 
 def rebuild_warmup_types(db):
-    """Build _types_source_warmup — structural warmup detection.
+    """Build _types_source_warmup — message-count warmup detection.
 
-    Warmup: < 50 tool-op chunks AND no Write/Edit/Task/MultiEdit.
-    Replaces brittle title = 'Warmup' filter.
+    Warmup: message_count < WARMUP_MESSAGE_THRESHOLD (default 5).
+    Sessions with fewer than 5 JSONL messages are /mcp reconnects,
+    aborted sessions, or empty agent spawns. No JOINs needed —
+    message_count is on _raw_sources.
     """
+    from flex.modules.claude_code.manage.noise import WARMUP_MESSAGE_THRESHOLD
+
     print("=" * 60)
     print("Step 0: Warmup Detection")
     print("=" * 60)
@@ -50,21 +54,17 @@ def rebuild_warmup_types(db):
     db.execute("DELETE FROM _types_source_warmup")
     db.execute("""
         INSERT INTO _types_source_warmup (source_id, is_warmup_only)
-        SELECT es.source_id, 1
-        FROM _edges_source es
-        JOIN _edges_tool_ops t ON es.chunk_id = t.chunk_id
-        GROUP BY es.source_id
-        HAVING COUNT(*) < 50
-           AND SUM(CASE WHEN t.tool_name IN ('Write', 'Edit', 'Task', 'MultiEdit')
-                        THEN 1 ELSE 0 END) = 0
-    """)
+        SELECT source_id, 1
+        FROM _raw_sources
+        WHERE message_count < ?
+    """, (WARMUP_MESSAGE_THRESHOLD,))
     db.commit()
 
     warmup_count = db.execute(
         "SELECT COUNT(*) FROM _types_source_warmup WHERE is_warmup_only = 1"
     ).fetchone()[0]
     log_op(db, 'rebuild_warmup_types', '_types_source_warmup',
-           params={'rule': '<50 tool ops AND no Write/Edit/Task/MultiEdit'},
+           params={'rule': f'message_count < {WARMUP_MESSAGE_THRESHOLD}'},
            rows_affected=warmup_count, source='rebuild_all.py')
     print(f'  {warmup_count} warmup sessions detected in {time.time()-t0:.1f}s\n')
     sys.stdout.flush()
