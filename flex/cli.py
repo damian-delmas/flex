@@ -859,58 +859,6 @@ def cmd_init(args):
         sys.exit(1)
 
 
-# ============================================================
-# flex index
-# ============================================================
-
-def cmd_index(args):
-    """Index sessions or corpus."""
-    import sqlite3
-
-    if args.source == "claude-code":
-        from flex.modules.claude_code.compile.worker import (
-            bootstrap_claude_code_cell, initial_backfill, CLAUDE_PROJECTS,
-        )
-
-        jsonls = list(CLAUDE_PROJECTS.rglob("*.jsonl"))
-        if not jsonls:
-            print("No Claude Code sessions found in ~/.claude/projects/")
-            return
-
-        print(f"Found {len(jsonls)} Claude Code sessions.")
-        cell_path = bootstrap_claude_code_cell()
-
-        conn = sqlite3.connect(str(cell_path), timeout=30.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=30000")
-
-        def _progress(i, total, sessions, chunks, elapsed):
-            sys.stdout.write(
-                f"\r  Indexing... {i}/{total} files "
-                f"({sessions} sessions, {chunks:,} chunks) [{elapsed:.0f}s]"
-            )
-            sys.stdout.flush()
-
-        stats = initial_backfill(conn, progress_cb=_progress)
-        print()
-        print(
-            f"Indexed {stats['sessions']} sessions, "
-            f"{stats['chunks']:,} chunks in {stats['elapsed']:.0f}s"
-        )
-
-        _run_enrichment(conn)
-        conn.close()
-
-    elif args.source == "docpac":
-        if not args.path:
-            print("docpac requires a path: flex index docpac /path/to/corpus")
-            return
-        subprocess.run(
-            [sys.executable, "-m", "flex.modules.docpac.compile.init", args.path],
-            check=True,
-        )
-
 
 # ============================================================
 # flex search
@@ -1088,41 +1036,6 @@ _ENRICHMENT_STUBS = {
     ],
 }
 
-
-def cmd_relay(args):
-    """Generate machine_id, start services, print relay URL."""
-    try:
-        import websockets  # noqa: F401
-    except ImportError:
-        from rich.console import Console
-        Console().print("[red]websockets not installed.[/red] Run: [bold]pip install websockets[/bold]")
-        return
-
-    import uuid as _uuid
-    from rich.console import Console
-    from rich.panel import Panel
-    from rich.text import Text
-    console = Console()
-
-    FLEX_HOME.mkdir(parents=True, exist_ok=True)
-    machine_id_path = FLEX_HOME / "machine_id"
-    if not machine_id_path.exists():
-        machine_id_path.write_text(_uuid.uuid4().hex[:8])
-    machine_id = machine_id_path.read_text().strip()
-
-    # Start services
-    _install_systemd()
-    flex_serve = Path("/usr/local/bin/flex-serve")
-    if flex_serve.exists():
-        import subprocess
-        subprocess.run([str(flex_serve)], check=False)
-
-    url = f"https://{machine_id}.getflex.dev/sse"
-    panel_content = Text()
-    panel_content.append("MCP Server Endpoint\n\n", style="white")
-    panel_content.append("  ")
-    panel_content.append(url, style="bold blue")
-    console.print(Panel(panel_content, padding=(0, 1)))
 
 
 def cmd_sync(args):
@@ -1336,11 +1249,6 @@ def main():
     init_p.add_argument("--local", action="store_true", help="Use local CPU for embeddings, skip Nomic prompt")
     init_p.add_argument("--nomic-key", help="Nomic API key (skips interactive prompt)")
 
-    # flex index
-    idx = sub.add_parser("index", help="Index sessions or corpus")
-    idx.add_argument("source", choices=["claude-code", "docpac"])
-    idx.add_argument("path", nargs="?", help="Corpus path (docpac only)")
-
     # flex search
     search_p = sub.add_parser("search", help="Search your sessions")
     search_p.add_argument("query", help="SQL query, @preset, or vec_ops expression")
@@ -1355,8 +1263,6 @@ def main():
     args = parser.parse_args()
     if args.command == "init":
         cmd_init(args)
-    elif args.command == "index":
-        cmd_index(args)
     elif args.command == "search":
         cmd_search(args)
     elif args.command == "sync":
