@@ -10,21 +10,12 @@ Flex gives your agent the schema and gets out of the way. Your agent reads what 
 curl -sSL https://getflex.dev/install.sh | bash
 ```
 
-<details>
-<summary>Other install methods</summary>
+<details><summary>other install methods</summary>
 
 ```bash
-# pipx (if you have it)
-pipx install getflex && flex init
-
-# manual venv
-python3 -m venv ~/.flex/venv && source ~/.flex/venv/bin/activate
-pip install getflex && flex init
-
-# escape hatch (any install method)
-python -m flex init
+pip install getflex && flex init          # manage your own environment
+python -m flex init                       # if GNU flex shadows the binary
 ```
-
 </details>
 
 ---
