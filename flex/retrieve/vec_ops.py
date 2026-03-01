@@ -702,10 +702,13 @@ def register_vec_ops(conn, caches: dict, embed_fn, cell_config: dict = None,
 
         # SQL pre-filter: execute 4th arg to get chunk IDs
         # Authorizer whitelist: pure SELECT only (READ=20, SELECT=21, FUNCTION=31, RECURSIVE=33)
+        # PRAGMA(19) data_version is allowed — FTS5 vtable constructor needs it to initialize.
         _SQLITE_OK, _SQLITE_DENY = 0, 1
         _SELECT_ONLY = {20, 21, 31, 33}
 
         def _read_only_authorizer(action, arg1, arg2, db_name, trigger_name):
+            if action == 19 and arg1 == 'data_version':
+                return _SQLITE_OK
             return _SQLITE_OK if action in _SELECT_ONLY else _SQLITE_DENY
 
         pre_filter_ids = None
