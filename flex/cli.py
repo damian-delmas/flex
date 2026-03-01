@@ -1141,6 +1141,48 @@ def cmd_sync(args):
         except sqlite3.OperationalError as e:
             print(f"  {name}: LOCKED ({e})")
 
+    # ---- Phase 3.5: FTS5 consistency ----
+    print()
+    print("[3.5/4] FTS5 consistency")
+    for cell in cells:
+        name = cell['name']
+        if target and name != target:
+            continue
+        db_path = resolve_cell(name)
+        if not db_path or not db_path.exists():
+            continue
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=30)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            chunks_count = conn.execute("SELECT COUNT(*) FROM _raw_chunks").fetchone()[0]
+            # chunks_fts
+            try:
+                fts_count = conn.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0]
+                if fts_count != chunks_count:
+                    print(f"  {name}: chunks_fts drift ({fts_count} vs {chunks_count}) — rebuilding")
+                    conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
+                    conn.commit()
+                    print(f"  {name}: chunks_fts rebuilt")
+                else:
+                    print(f"  {name}: chunks_fts ok ({fts_count} rows)")
+            except Exception:
+                print(f"  {name}: chunks_fts not present (skip)")
+            # content_fts
+            try:
+                content_count = conn.execute("SELECT COUNT(*) FROM _raw_content").fetchone()[0]
+                content_fts_count = conn.execute("SELECT COUNT(*) FROM content_fts").fetchone()[0]
+                if content_fts_count != content_count:
+                    print(f"  {name}: content_fts drift ({content_fts_count} vs {content_count}) — rebuilding")
+                    conn.execute("INSERT INTO content_fts(content_fts) VALUES('rebuild')")
+                    conn.commit()
+                    print(f"  {name}: content_fts rebuilt")
+            except Exception:
+                pass  # content_fts may not exist (docpac cells)
+            conn.close()
+        except Exception as e:
+            print(f"  {name}: FTS check failed ({e})")
+
     # ---- Phase 4: Services ----
     print()
     print("[4/4] Services")

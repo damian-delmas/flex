@@ -41,6 +41,7 @@ _SQLITE_OK, _SQLITE_DENY = 0, 1
 _SEARCH_ALLOW = {
     20,  # SQLITE_READ        — read column value
     21,  # SQLITE_SELECT      — SELECT statement
+    29,  # SQLITE_CREATE_VTABLE — FTS5 vtable access (read, not create)
     31,  # SQLITE_FUNCTION    — use SQL function (incl. built-ins)
     33,  # SQLITE_RECURSIVE   — recursive CTE
 }
@@ -351,10 +352,10 @@ def execute_query(db: sqlite3.Connection, query: str) -> str:
                 f"ORDER BY v.score DESC LIMIT 10"
             ),
             "keyword": (
-                f"SELECT c.id, c.content "
-                f"FROM chunks_fts f JOIN _raw_chunks c ON f.rowid = c.rowid "
-                f"WHERE chunks_fts MATCH '{escaped}' "
-                f"ORDER BY bm25(chunks_fts) LIMIT 10"
+                f"SELECT k.id, k.rank, k.snippet, m.content "
+                f"FROM keyword('{escaped}') k "
+                f"JOIN messages m ON k.id = m.id "
+                f"ORDER BY k.rank DESC LIMIT 10"
             ),
         })
 
@@ -367,12 +368,14 @@ def execute_query(db: sqlite3.Connection, query: str) -> str:
             return json.dumps({"error": err})
         upper = sql.upper()
 
-    # Materialize vec_ops() table sources into temp tables
+    # Materialize table sources into temp tables
     # (runs BEFORE authorizer — trusted code that needs temp table writes)
     from flex.retrieve.vec_ops import materialize_vec_ops
+    from flex.retrieve.keyword import materialize_keyword
     sql = materialize_vec_ops(db, sql)
-
-    # vec_ops returned an error (bad pre-filter, missing column, etc)
+    if sql.startswith('{"error"'):
+        return sql
+    sql = materialize_keyword(db, sql)
     if sql.startswith('{"error"'):
         return sql
 
@@ -541,20 +544,26 @@ def build_instructions() -> str:
         "",
         "**Exact term** (FTS5 — domain name, filename, error, UUID):",
         "```sql",
-        "SELECT c.id, c.content",
-        "FROM chunks_fts JOIN _raw_chunks c ON chunks_fts.rowid = c.rowid",
-        "WHERE chunks_fts MATCH 'term'",
-        "ORDER BY bm25(chunks_fts) LIMIT 10",
-        "-- double-quote terms with special chars (dots, hyphens, etc): MATCH '\"axp.systems\"' or MATCH '\"pre-filter\"'",
-        "-- IMPORTANT: MATCH requires the real table name, never an alias.",
-        "-- WRONG: FROM chunks_fts f ... WHERE f MATCH 'x'",
-        "-- RIGHT: FROM chunks_fts f ... WHERE chunks_fts MATCH 'x'",
+        "SELECT k.id, k.rank, k.snippet, m.content",
+        "FROM keyword('term') k",
+        "JOIN messages m ON k.id = m.id",
+        "ORDER BY k.rank DESC LIMIT 10",
+        "-- wrap terms with special chars in double-quotes: keyword('\"axp.systems\"')",
+        "-- IMPORTANT: keyword() is a table source — always use after FROM or JOIN.",
+        "-- keyword() returns (id, rank, snippet). rank is positive — higher = better.",
         "```",
         "",
-        "**Hybrid FTS + vec_ops** (combine keyword match with semantic ranking):",
+        "**Hybrid keyword + semantic** (keyword narrows, semantic ranks):",
+        "```sql",
+        "SELECT k.id, k.rank, v.score, m.content",
+        "FROM keyword('auth') k",
+        "JOIN vec_ops('_raw_chunks', 'authentication patterns') v ON k.id = v.id",
+        "JOIN messages m ON k.id = m.id",
+        "ORDER BY k.rank + v.score DESC",
+        "LIMIT 10",
+        "```",
         "",
-        "IMPORTANT: FTS returns integer rowids, vec_ops returns string IDs.",
-        "Bridge through `_raw_chunks` to convert between them:",
+        "**Hybrid FTS + vec_ops** (FTS5 as vec_ops pre-filter):",
         "```sql",
         "SELECT v.id, v.score, m.content",
         "FROM vec_ops('_raw_chunks', 'YOUR TOPIC', '',",

@@ -704,7 +704,7 @@ def register_vec_ops(conn, caches: dict, embed_fn, cell_config: dict = None,
         # Authorizer whitelist: pure SELECT only (READ=20, SELECT=21, FUNCTION=31, RECURSIVE=33)
         # PRAGMA(19) data_version is allowed — FTS5 vtable constructor needs it to initialize.
         _SQLITE_OK, _SQLITE_DENY = 0, 1
-        _SELECT_ONLY = {20, 21, 31, 33}
+        _SELECT_ONLY = {20, 21, 29, 31, 33}  # 29=CREATE_VTABLE (FTS5 read access)
 
         def _read_only_authorizer(action, arg1, arg2, db_name, trigger_name):
             if action == 19 and arg1 == 'data_version':
