@@ -2,7 +2,9 @@
 
 AI was trained on SQL. It doesn't need another retrieval API.
 
-Every `memory.search()` call is a dumbed-down SELECT. Every `memory.add()` is a dumbed-down INSERT. Abstractions exist to make things easier for humans. Your agent isn't human.
+Every `memory.search()` call is a dumbed-down SELECT. Every `memory.add()` is a dumbed-down INSERT.
+
+Abstractions exist to make things easier for humans. Your agent isn't human.
 
 Flex gives your agent the schema and gets out of the way. Your agent reads what exists and composes with what's available.
 
@@ -24,12 +26,12 @@ python -m flex init                       # if GNU flex shadows the binary
 
 Unify your knowledge. Each domain has its own cell. The schema is the protocol — ATTACH any two cells and JOIN them directly.
 
-| cell | what's in it | |
-|---|---|---|
-| `claude_code` | Every coding session. Decisions, bugs, architecture choices across all projects. | 138K chunks · 3,175 sessions |
-| `vector-project-docs` | Spec-driven development docs, architecture, patterns, changelogs. | 4.6K chunks · 747 docs |
-| `infra-project-docs` | Architecture documents, changelogs, agentic memories. | 2.4K chunks · 341 docs |
-| yours | anything | one compile adapter |
+| cell | what's in it |
+|---|---|
+| `claude_code` | Every coding session. Decisions, bugs, architecture choices across all projects. |
+| `vector-project-docs` | Spec-driven development docs, architecture, patterns, changelogs. |
+| `infra-project-docs` | Architecture documents, changelogs, agentic memories. |
+| yours | anything — one compile adapter |
 
 Query between cells:
 
@@ -41,21 +43,6 @@ JOIN docs.chunks d ON d.content LIKE '%authentication%'
 WHERE m.type = 'user_prompt'
 LIMIT 10
 ```
-
----
-
-## The Cell
-
-The prefix declares the lifecycle, the mutability, the writer. No manifest. No config. The database describes itself.
-
-```
-_raw_*      immutable     content, embeddings      written by compile
-_edges_*    append-only   relationships             written by compile or modules
-_types_*    immutable     classification            written by compile
-_enrich_*   mutable       graph scores              written by manage
-```
-
-Graph intelligence — centrality, hub status, community membership — lives in `_enrich_*` columns.
 
 ---
 
@@ -73,7 +60,7 @@ SQL pre-filter  →  NumPy vector operations  →  SQL compose
 
 **SQL pre-filter.** Any SQL whose first column returns chunk IDs. `WHERE type = 'user_prompt'`. `WHERE session_id LIKE 'abc%'`. `JOIN _edges_file_identity ON file_uuid = ?`. Every table in the database is pre-filter vocabulary. If your WHERE returns 12,000 chunks, NumPy operates on 12,000 vectors — not 148K.
 
-**NumPy vector operations.** Cosine similarity across the candidate set. Modulation tokens reshape the landscape before selection. `unlike:oauth` penalizes similarity to a concept in embedding space — not a metadata filter, an actual vector operation. `diverse` runs MMR. `recent:7` applies temporal decay. The embeddings aren't static. They're modulated per question.
+**NumPy vector operations.** Cosine similarity across the candidate set. Modulation tokens reshape the landscape before selection. `unlike:oauth` penalizes similarity to a concept in embedding space — not a metadata filter, an actual vector operation. `diverse` runs MMR. `recent:7` applies temporal decay.
 
 **SQL compose.** Full SQL on 500 candidates. Hub boost. Community filter. JOINs against edge tables. Graph arithmetic. Add a column to your chunks — sentiment, classification, anything — and the agent composes it into queries immediately. No code change. No pipeline update. Just SQL.
 
@@ -90,6 +77,25 @@ LIMIT 10
 
 ---
 
+## @orient
+
+The database describes itself. Run `@orient` and the agent gets the schema, graph topology, communities, hubs, and every available preset in one call. No SKILL.md. No verbose MCP instructions. The agent reads what exists and knows what to ask.
+
+```
+shape:        148K chunks · 3,337 sources
+views:        messages (id, content, type, session_id, tool_name, target_file, ...)
+              sessions (session_id, project, centrality, is_hub, community_label, ...)
+functions:    vec_ops(table, query, tokens, pre_filter_sql) → (id, score)
+              keyword(term) → (id, rank, snippet)
+communities:  flexsearch (71 sessions) · thread (111) · npta (106) · website (55)
+hubs:         9d1e3f3d "FlexSearch SQL engine" (centrality: 0.0045)
+presets:      @digest @story @genealogy @file @sprints @bridges ...
+```
+
+3,000 tokens. Most of which is the schema itself. That's the entire onboarding.
+
+---
+
 ## Modulation Tokens
 
 | token | operation |
@@ -100,7 +106,7 @@ LIMIT 10
 | `like:id1,id2` | centroid — search from a synthetic vantage |
 | `from:T to:T` | trajectory — direction through embedding space |
 
-They compose freely. `diverse unlike:oauth recent:7` — three landscape operations, one query. The embeddings aren't static. They're modulated per question.
+They compose freely. `diverse unlike:oauth recent:7` — three operations on the embedding space, one query. The embeddings aren't static. They're modulated per question.
 
 ## Structure Tokens
 
@@ -125,6 +131,16 @@ A module is tables. Install by creating them with convention prefixes. Uninstall
 
 Compile raw artifacts into chunks. One adapter per format.
 
+**claude_code** — the reference implementation. Indexes your full session history on first run, then stays current. Hook → queue → daemon (2s ingest). SOMA inline. Enrichment every 30 minutes.
+
+```
+file_uuid      100%      every file tool call, unified across renames
+content_hash   81.9%     file content at capture time
+url_uuid       99.3%     WebFetch operations
+```
+
+<details><summary>writing a source module</summary>
+
 A source module has four domains:
 
 ```
@@ -144,15 +160,7 @@ _edges_source (chunk_id, source_id)
 
 Everything else is additive. Add `_types_message` for classification. Add `_edges_tool_ops` if your format has file operations. Call `soma_enrich(chunk)` inline and four identity edge tables appear automatically.
 
-**claude_code** — the reference implementation. Indexes your full session history on first run, then stays current. Hook → queue → daemon (2s ingest). Writes 8 table types. SOMA inline. Enrichment every 30 minutes.
-
-```
-3,337 sessions  ·  148K chunks  ·  284MB  ·  one file
-
-file_uuid      100%      every file tool call, unified across renames
-content_hash   81.9%     file content at capture time
-url_uuid       99.3%     WebFetch operations
-```
+</details>
 
 ### Extension Modules
 
@@ -182,13 +190,29 @@ Capture any query as a preset. Ship with your module. Discoverable via `@orient`
 @digest          multi-day activity summary — sessions, tools, files touched
 @sprints         work periods detected by 6h gaps, with op counts
 @story           session narrative — timeline, artifacts, agents
-@file            every session that touched a file, unified across renames
 @genealogy       concept lineage — timeline, hubs, key excerpts
 @delegation-tree recursive sub-agent tree from any parent session
 @bridges         cross-community connector sessions
 ```
 
-`@file` resolves a file UUID from any path, fans out to every session that ever touched it — across renames, moves, worktrees — and falls back to path matching for older data. One MCP call.
+**@file** resolves a file UUID from any path, fans out to every session that ever touched it — across renames, moves, worktrees — and falls back to path matching for older data. One MCP call.
+
+---
+
+<details><summary>cell internals</summary>
+
+The prefix declares the lifecycle, the mutability, the writer. No manifest. No config. The database describes itself.
+
+```
+_raw_*      immutable     content, embeddings      written by compile
+_edges_*    append-only   relationships             written by compile or modules
+_types_*    immutable     classification            written by compile
+_enrich_*   mutable       graph scores              written by manage
+```
+
+Graph intelligence — centrality, hub status, community membership — lives in `_enrich_*` columns.
+
+</details>
 
 ---
 
