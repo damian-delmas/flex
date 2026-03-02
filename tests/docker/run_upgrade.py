@@ -77,10 +77,12 @@ h.check("upgrade installed", r.returncode == 0, r.stderr[:300])
 # ── Phase 4: Data integrity ──────────────────────────────────────────────────
 h.phase("Phase 4: Data integrity after upgrade")
 
-# Reload registry module
-importlib.reload(reg)
-
-cell_path = reg.resolve_cell("claude_code")
+# Resolve cell via subprocess (in-process reload breaks after editable install)
+r_cell = subprocess.run(
+    ["python3", "-c", "import flex.registry as r; p = r.resolve_cell('claude_code'); print(p or '')"],
+    capture_output=True, text=True, timeout=10,
+)
+cell_path = Path(r_cell.stdout.strip()) if r_cell.stdout.strip() else None
 h.check("cell still registered", cell_path is not None)
 
 if cell_path and cell_path.exists():

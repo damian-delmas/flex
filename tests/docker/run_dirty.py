@@ -53,13 +53,24 @@ def scenario_devtools():
     """GNU flex collision — /usr/bin/flex is the lexer, flex binary is getflex."""
     h = Harness("dirty-devtools")
 
-    # ── Verify GNU flex occupies /usr/bin/flex ─────────────────────────────
+    # ── Verify GNU flex exists and our proxy forwards to it ────────────────
     h.phase("GNU flex collision")
 
+    h.check("/usr/bin/flex exists (GNU)",
+            os.path.isfile("/usr/bin/flex"),
+            "GNU flex not at /usr/bin/flex")
+
+    # Our flex wins PATH (pip install puts it at /usr/local/bin/flex)
     which_flex = shutil.which("flex")
-    h.check("which flex returns /usr/bin/flex",
-            which_flex == "/usr/bin/flex",
+    h.check("which flex returns our binary (not GNU)",
+            which_flex != "/usr/bin/flex",
             f"got: {which_flex}")
+
+    # But GNU flex usage is transparently proxied
+    r = _run(["flex", "--version"])
+    h.check("flex --version proxies to GNU flex",
+            r.returncode == 0 and "flex" in (r.stdout or "").lower(),
+            f"stdout: {(r.stdout or '')[:100]}")
 
     # ── flex CLI works (via python -m flex in Docker) ─────────────────────
     h.phase("flex CLI")
@@ -235,19 +246,19 @@ def scenario_minimal():
     h.check("jq not installed", shutil.which("jq") is None,
             f"found at: {shutil.which('jq')}")
 
-    # ── flex init --local should fail with clear error ──────────────────
-    h.phase("flex init failure")
+    # ── flex init --local should surface missing deps clearly ──────────
+    h.phase("flex init with missing deps")
 
     r = _run(["flex", "init", "--local"])
-    h.check("flex init exit non-zero", r.returncode != 0,
+    h.check("flex init exits cleanly", r.returncode == 0,
             f"exit code {r.returncode}")
 
-    # Check that error message mentions missing deps
+    # Check that output mentions missing deps by name
     output = (r.stdout or "") + (r.stderr or "")
     output_lower = output.lower()
     mentions_git = "git" in output_lower
     mentions_jq = "jq" in output_lower
-    h.check("error mentions git or jq",
+    h.check("output mentions git or jq",
             mentions_git or mentions_jq,
             f"output: {output[:500]}")
 
