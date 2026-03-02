@@ -61,17 +61,21 @@ Graph intelligence — centrality, hub status, community membership — lives in
 
 ## The Pipeline
 
-Every query runs three steps. Each one does exclusively what the others can't.
+Vector databases abstract your embeddings away. Flex keeps embeddings as numpy arrays you can modulate — diverse, unlike, trajectory, contrastive, temporal decay — operations on the embedding space itself.
+
+The retrieval engine is published independently as [flexvec](https://github.com/damian-delmas/flexvec) for use in any SQLite database.
+
+Every query runs three steps. No re-ranking pipeline. No post-processing. The agent writes the query.
 
 ```
 SQL pre-filter  →  NumPy vector operations  →  SQL compose
 ```
 
-**SQL pre-filter.** Any SQL whose first column returns chunk IDs. `WHERE type = 'user_prompt'`. `WHERE session_id LIKE 'abc%'`. `JOIN _edges_file_identity ON file_uuid = ?`. Every table in the database is pre-filter vocabulary.
+**SQL pre-filter.** Any SQL whose first column returns chunk IDs. `WHERE type = 'user_prompt'`. `WHERE session_id LIKE 'abc%'`. `JOIN _edges_file_identity ON file_uuid = ?`. Every table in the database is pre-filter vocabulary. If your WHERE returns 12,000 chunks, NumPy operates on 12,000 vectors — not 148K.
 
-**NumPy vector operations.** Cosine similarity across the candidate set. Modulation tokens reshape the landscape before selection. The retrieval engine is published independently as [flexvec](https://github.com/damian-delmas/flexvec) for use in any SQLite database.
+**NumPy vector operations.** Cosine similarity across the candidate set. Modulation tokens reshape the landscape before selection. `unlike:oauth` penalizes similarity to a concept in embedding space — not a metadata filter, an actual vector operation. `diverse` runs MMR. `recent:7` applies temporal decay. The embeddings aren't static. They're modulated per question.
 
-**SQL compose.** Full SQL on 500 candidates. Hub boost. Community filter. JOINs against edge tables. Graph arithmetic. All composable.
+**SQL compose.** Full SQL on 500 candidates. Hub boost. Community filter. JOINs against edge tables. Graph arithmetic. Add a column to your chunks — sentiment, classification, anything — and the agent composes it into queries immediately. No code change. No pipeline update. Just SQL.
 
 ```sql
 SELECT v.id, v.score, m.content
@@ -84,15 +88,9 @@ ORDER BY v.score * (1 + COALESCE(s.centrality, 0)) DESC
 LIMIT 10
 ```
 
-### Optimization
-
-The pre-filter runs first. If your WHERE clause returns 12,000 chunks, NumPy operates on 12,000 vectors — not 148K. Full-corpus matmul is the worst case, not the default.
-
 ---
 
 ## Modulation Tokens
-
-Vector search returns the same results every time. Tokens reshape the embedding landscape per query.
 
 | token | operation |
 |---|---|
