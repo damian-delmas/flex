@@ -2,9 +2,7 @@
 
 AI was trained on SQL. It doesn't need another retrieval API.
 
-Every `memory.search()` call is a dumbed-down SELECT. Every `memory.add()` is a dumbed-down INSERT.
-
-Abstractions exist to make things easier for humans. Your agent isn't human.
+Every `memory.search()` call is a dumbed-down SELECT. Every `memory.add()` is a dumbed-down INSERT. Abstractions exist to make things easier for humans. Your agent isn't human.
 
 Flex gives your agent the schema and gets out of the way. Your agent reads what exists and composes with what's available.
 
@@ -62,7 +60,7 @@ SQL pre-filter  →  NumPy vector operations  →  SQL compose
 
 **NumPy vector operations.** Cosine similarity across the candidate set. Modulation tokens reshape the landscape before selection. `unlike:oauth` penalizes similarity to a concept in embedding space — not a metadata filter, an actual vector operation. `diverse` runs MMR. `recent:7` applies temporal decay.
 
-**SQL compose.** Full SQL on 500 candidates. Hub boost. Community filter. JOINs against edge tables. Graph arithmetic. Add a column to your chunks — sentiment, classification, anything — and the agent composes it into queries immediately. No code change. No pipeline update. Just SQL.
+**SQL compose.** Full SQL on 500 candidates. Hub boost. Community filter. JOINs against edge tables. Graph arithmetic. Add a column to your chunks — sentiment, classification, anything — and compose it into queries immediately. For cells with curated views, add the column to the view `.sql` file and run `flex sync`. For auto-generated views, it appears automatically.
 
 ```sql
 SELECT v.id, v.score, m.content
@@ -133,11 +131,7 @@ Compile raw artifacts into chunks. One adapter per format.
 
 **claude_code** — the reference implementation. Indexes your full session history on first run, then stays current. Hook → queue → daemon (2s ingest). SOMA inline. Enrichment every 30 minutes.
 
-```
-file_uuid      100%      every file tool call, unified across renames
-content_hash   81.9%     file content at capture time
-url_uuid       99.3%     WebFetch operations
-```
+Run `@health` on your cell for current coverage. Fresh installs achieve 100% on all SOMA dimensions.
 
 <details><summary>writing a source module</summary>
 
@@ -174,7 +168,7 @@ CREATE TABLE _edges_file_identity (
 );
 ```
 
-The view generator discovers it. Views update. AI can JOIN on it immediately. No registration. No base class. No interface. A cell without SOMA has full retrieval — identity edges are simply absent.
+The view generator discovers it. For tables with a PK on `chunk_id`, auto-generated views include it automatically. Curated views require adding the JOIN manually. All shipped modules use curated views. No registration. No base class. No interface. A cell without SOMA has full retrieval — identity edges are simply absent.
 
 ---
 

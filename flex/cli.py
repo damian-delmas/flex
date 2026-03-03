@@ -385,7 +385,7 @@ def _run_enrichment(conn):
     print(f"  [ok] enrichment done in {time.time()-t0:.0f}s")
 
 
-def _run_enrichment_quiet(conn) -> tuple[int, list[str]]:
+def _run_enrichment_quiet(conn, progress_cb=None) -> tuple[int, list[str]]:
     """Run enrichment silently. Returns (cluster_count, failed_step_names)."""
     import io
     import contextlib
@@ -417,11 +417,15 @@ def _run_enrichment_quiet(conn) -> tuple[int, list[str]]:
             ("repo attribution",   lambda: run_repo_project(conn)),
             ("community labels",   lambda: rebuild_community_labels(conn)),
         ]:
+            if progress_cb:
+                progress_cb(step)
             try:
                 fn()
             except Exception:
                 failures.append(step)
 
+        if progress_cb:
+            progress_cb("presets")
         try:
             # Use existing conn directly to avoid a second connection fighting for
             # the write lock while conn is still open.
@@ -437,6 +441,8 @@ def _run_enrichment_quiet(conn) -> tuple[int, list[str]]:
         except Exception:
             failures.append("presets")
 
+        if progress_cb:
+            progress_cb("views")
         try:
             view_dir = _find_view_dir('claude_code', 'claude-code')
             if view_dir:
@@ -513,14 +519,19 @@ def cmd_init(args):
     from flex.onnx.fetch import download_model, model_ready
     _model_ok = True
     if not model_ready():
-        console.print("  [dim]model[/dim]               [yellow]downloading...[/yellow]")
-        try:
-            download_model()
-        except RuntimeError as e:
-            console.print(f"  [yellow]model[/yellow]               [yellow]failed: {e}[/yellow]")
+        import io as _io, contextlib as _ctx
+        _dl_err = None
+        with console.status("  [dim]model[/dim]               [yellow]downloading[/yellow]", spinner="dots", spinner_style="yellow"):
+            with _ctx.redirect_stdout(_io.StringIO()):
+                try:
+                    download_model()
+                except RuntimeError as e:
+                    _dl_err = e
+        if _dl_err is not None:
+            console.print(f"  [yellow]model[/yellow]               [yellow]failed: {_dl_err}[/yellow]")
             console.print(f"  [dim]SQL and FTS will work. Rerun flex init to retry download.[/dim]")
             _model_ok = False
-            _warnings.append(f"Model download: {e}")
+            _warnings.append(f"Model download: {_dl_err}")
     if _model_ok:
         console.print("  [dim]model[/dim]               [green]ok[/green]")
 
@@ -688,7 +699,7 @@ def cmd_init(args):
 
         with Progress(
             TextColumn("  [dim]{task.description:<20}[/dim]"),
-            SpinnerColumn(spinner_name="dots", finished_text="[green]✓[/green]"),
+            SpinnerColumn(spinner_name="dots", style="yellow", finished_text="[green]✓[/green]"),
             BarColumn(bar_width=20, complete_style="green", finished_style="green"),
             TextColumn("[dim]{task.fields[info]}[/dim]"),
             console=console,
@@ -771,9 +782,11 @@ def cmd_init(args):
                                 info=f"{stats['chunks']:,} chunks embedded")
 
             # Graph + enrichment (spinner, fully silent)
-            progress.update(t_graph, visible=True, info="analyzing...")
+            progress.update(t_graph, visible=True, info="analyzing")
+            def _graph_cb(label):
+                progress.update(t_graph, info=label)
             try:
-                n_clusters, _enrich_failures = _run_enrichment_quiet(conn)
+                n_clusters, _enrich_failures = _run_enrichment_quiet(conn, progress_cb=_graph_cb)
             except Exception as e:
                 console.print(f"  [yellow]Enrichment error: {e}[/yellow]")
                 _warnings.append(f"Enrichment: {e}")
@@ -1191,7 +1204,7 @@ def cmd_sync(args):
     if sys.platform == "linux":
         worker_unit = SYSTEMD_DIR / "flex-worker.service"
         if not worker_unit.exists():
-            print("  Installing missing systemd units...")
+            print("  Installing missing systemd units")
             try:
                 _install_systemd()
             except Exception as e:
@@ -1214,7 +1227,7 @@ def cmd_sync(args):
     elif sys.platform == "darwin":
         worker_plist = LAUNCHD_DIR / "dev.getflex.worker.plist"
         if not worker_plist.exists():
-            print("  Installing missing launchd agents...")
+            print("  Installing missing launchd agents")
             try:
                 _install_launchd()
             except Exception as e:

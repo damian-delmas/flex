@@ -85,10 +85,6 @@ def install_cell(cell_name: str, preset_dirs: list[Path] = None):
             if pd.exists():
                 install_presets(conn, pd)
 
-        count = conn.execute("SELECT COUNT(*) FROM _presets").fetchone()[0]
-        names = [r[0] for r in conn.execute("SELECT name FROM _presets ORDER BY name").fetchall()]
-        print(f"  {cell_name}: {count} presets [{', '.join(names)}]")
-
         conn.close()
     except sqlite3.OperationalError as e:
         print(f"  {cell_name}: LOCKED ({e}) — retry after stopping flex-worker")

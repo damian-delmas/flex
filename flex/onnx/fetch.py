@@ -30,12 +30,20 @@ def model_dir() -> Path:
     return MODEL_DIR
 
 
+def _files_valid(directory: Path) -> bool:
+    """Check all model files exist AND have correct checksums."""
+    for name, expected_hash in FILES:
+        p = directory / name
+        if not p.exists():
+            return False
+        if _sha256(p) != expected_hash:
+            return False
+    return True
+
+
 def model_ready() -> bool:
-    """Check if all model files exist (user dir or bundled)."""
-    return (
-        all((MODEL_DIR / name).exists() for name, _ in FILES)
-        or all((BUNDLED_DIR / name).exists() for name, _ in FILES)
-    )
+    """Check if all model files exist with valid checksums (user dir or bundled)."""
+    return _files_valid(MODEL_DIR) or _files_valid(BUNDLED_DIR)
 
 
 def _copy_bundled() -> bool:
@@ -90,7 +98,10 @@ def download_model(force: bool = False) -> Path:
     for name, expected_hash in FILES:
         target = dest / name
         if target.exists() and not force:
-            continue
+            if _sha256(target) == expected_hash:
+                continue
+            # Corrupt or truncated — re-download
+            target.unlink(missing_ok=True)
 
         url = f"{BASE_URL}/{name}"
         print(f"  {name}")

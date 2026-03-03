@@ -19,16 +19,29 @@ main() {
 
     # ── Color (respect NO_COLOR / dumb terminals) ────────────────
     if [ -n "${NO_COLOR:-}" ] || [ "${TERM:-}" = "dumb" ] || ! [ -t 1 ]; then
-        RED='' GREEN='' DIM='' BOLD='' RESET=''
+        RED='' GREEN='' YELLOW='' DIM='' BOLD='' RESET=''
     else
-        RED='\033[0;31m' GREEN='\033[0;32m' DIM='\033[0;90m'
+        RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[0;33m' DIM='\033[0;90m'
         BOLD='\033[1m' RESET='\033[0m'
     fi
 
     info()  { echo -e "${DIM}$1${RESET}"; }
-    ok()    { echo -e "${GREEN}$1${RESET}"; }
-    warn()  { echo -e "${RED}$1${RESET}"; }
+    ok()    { printf "${DIM}  %-10s${GREEN}%s${RESET}\n" "$1" "$2"; }
+    warn()  { printf "${DIM}  %-10s${YELLOW}%s${RESET}\n" "$1" "$2"; }
     fail()  { echo -e "${RED}$1${RESET}" >&2; exit 1; }
+
+    _spin_pid=""
+    _spin() {
+        local label="$1" msg="$2"
+        while true; do
+            for c in '⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏'; do
+                printf "\r${DIM}  %-10s${YELLOW}%s %s${RESET}" "$label" "$c" "$msg"
+                sleep 0.1
+            done
+        done
+    }
+    _spin_start() { _spin "$1" "$2" & _spin_pid=$!; }
+    _spin_stop()  { kill "$_spin_pid" 2>/dev/null || true; wait "$_spin_pid" 2>/dev/null || true; printf "\r\033[K"; }
 
     need_cmd() {
         command -v "$1" &>/dev/null || fail "$1 is required but not found.\n  $2"
@@ -69,11 +82,11 @@ main() {
         echo ""
         if [ -L "${BIN_DIR}/flex" ]; then
             rm "${BIN_DIR}/flex"
-            ok "  removed   ${BIN_DIR}/flex"
+            ok "removed" "${BIN_DIR}/flex"
         fi
         if [ -d "$VENV_DIR" ]; then
             rm -rf "$VENV_DIR"
-            ok "  removed   ${VENV_DIR}"
+            ok "removed" "${VENV_DIR}"
         fi
         echo ""
         info "  Data at ~/.flex/ was NOT removed (cells, registry, models)."
@@ -121,21 +134,25 @@ main() {
 
     # ── Create venv ──────────────────────────────────────────────
     if [ "$DO_REINSTALL" = true ] && [ -d "$VENV_DIR" ]; then
-        info "  venv      removing old..."
+        _spin_start "venv" "removing old"
         rm -rf "$VENV_DIR"
+        _spin_stop
+        ok "venv" "removed"
     fi
 
     if [ -d "$VENV_DIR" ]; then
         info "  venv      exists (${VENV_DIR})"
     else
-        info "  venv      creating..."
+        _spin_start "venv" "creating"
         mkdir -p "$FLEX_HOME"
         if ! "$PYTHON" -m venv "$VENV_DIR"; then
+            _spin_stop
             # Clean up partial venv on failure
             rm -rf "$VENV_DIR" 2>/dev/null || true
             fail "Failed to create venv. Check Python installation."
         fi
-        ok "  venv      ok"
+        _spin_stop
+        ok "venv" "ok"
     fi
 
     # ── Install getflex ──────────────────────────────────────────
@@ -145,18 +162,21 @@ main() {
         info "  install   pinned to ${FLEX_VERSION}"
     fi
 
-    info "  install   pip install ${_pkg}..."
+    _spin_start "install" "pip install ${_pkg}"
     if ! "${VENV_DIR}/bin/pip" install --upgrade --quiet --retries 3 "$_pkg" 2>&1; then
+        _spin_stop
         fail "pip install failed.\n  Try manually: ${VENV_DIR}/bin/pip install ${_pkg}"
     fi
 
     # Verify import works
     if ! "${VENV_DIR}/bin/python" -c "import flex" &>/dev/null; then
+        _spin_stop
         fail "Installation broken — import flex failed.\n  Try: ${VENV_DIR}/bin/pip install --force-reinstall getflex"
     fi
+    _spin_stop
 
     VER=$("${VENV_DIR}/bin/python" -c "from importlib.metadata import version; print(version('getflex'))")
-    ok "  install   getflex ${VER}"
+    ok "install" "getflex ${VER}"
 
     # ── Symlink to PATH ──────────────────────────────────────────
     mkdir -p "$BIN_DIR"
