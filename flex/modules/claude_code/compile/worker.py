@@ -1576,6 +1576,17 @@ def daemon_loop(interval=2):
         except Exception as e:
             print(f"[worker] Error: {e}", file=sys.stderr)
 
+        # Sweep NULL embeddings every tick — catches interrupted flex init,
+        # failed embeds, or any other orphaned chunks. Small batch (64) so
+        # the 2s loop stays responsive. Backlog clears in a few ticks.
+        try:
+            swept = _batch_embed_chunks(conn, batch_size=64, quiet=True)
+            if swept > 0:
+                conn.commit()
+                print(f"[worker] Embedded {swept} orphaned chunks", file=sys.stderr)
+        except Exception as e:
+            print(f"[worker] Embed sweep error: {e}", file=sys.stderr)
+
         # Drain docpac pending queue (same embedder, different cell connections)
         if docpac_process_queue:
             try:

@@ -40,19 +40,19 @@ ONNX_DIR = Path(__file__).parent
 
 
 def _resolve_model_path() -> Path:
-    """Bundled first, then $FLEX_HOME/models/ (FLEX_HOME-aware)."""
+    """User dir first, then bundled — matches model_ready() priority in fetch.py."""
     import os
-    bundled = ONNX_DIR / "model.onnx"
-    if bundled.exists():
-        return bundled
     flex_home = Path(os.environ.get("FLEX_HOME", Path.home() / ".flex"))
     user = flex_home / "models" / "model.onnx"
     if user.exists():
         return user
+    bundled = ONNX_DIR / "model.onnx"
+    if bundled.exists():
+        return bundled
     raise RuntimeError(
         "Embedding model not found.\n"
-        f"  Checked: {bundled}\n"
         f"  Checked: {user}\n"
+        f"  Checked: {bundled}\n"
         "  Run 'flex init' to download it."
     )
 
@@ -115,10 +115,13 @@ class ONNXEmbedder:
             # ORT_ENABLE_ALL: fuses QKV attention, layer norm, GELU, embedding
             # layers into single kernels. 2-5x speedup on transformers.
             opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-            # intra_op=0 lets ONNX use all physical cores (default heuristic).
-            # inter_op=1 because we run one model sequentially.
-            opts.intra_op_num_threads = 0
+            # Limit thread pool to 4 threads to prevent ONNX spin-wait burning
+            # CPU when idle. 0 = all cores, which creates 50+ threads that
+            # spin-wait at ~20% CPU even between batches.
+            opts.intra_op_num_threads = 4
             opts.inter_op_num_threads = 1
+            # Disable thread spin-wait to prevent idle CPU burn in daemon mode
+            opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
             # Prefer CUDA if available, fall back to CPU transparently
             available = ort.get_available_providers()
             providers = (

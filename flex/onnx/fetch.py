@@ -47,8 +47,8 @@ def model_ready() -> bool:
 
 
 def _copy_bundled() -> bool:
-    """Copy bundled model files to ~/.flex/models/. Returns True if successful."""
-    if not all((BUNDLED_DIR / name).exists() for name, _ in FILES):
+    """Copy bundled model files to ~/.flex/models/. Returns True only if checksums valid."""
+    if not _files_valid(BUNDLED_DIR):
         return False
     import shutil
     dest = model_dir()

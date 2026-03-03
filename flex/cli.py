@@ -518,20 +518,16 @@ def cmd_init(args):
     # 2. Model
     from flex.onnx.fetch import download_model, model_ready
     _model_ok = True
-    if not model_ready():
-        import io as _io, contextlib as _ctx
-        _dl_err = None
-        with console.status("  [dim]model[/dim]               [yellow]downloading[/yellow]", spinner="dots", spinner_style="yellow"):
-            with _ctx.redirect_stdout(_io.StringIO()):
-                try:
-                    download_model()
-                except RuntimeError as e:
-                    _dl_err = e
-        if _dl_err is not None:
-            console.print(f"  [yellow]model[/yellow]               [yellow]failed: {_dl_err}[/yellow]")
+    _model_valid = model_ready()
+    if not _model_valid:
+        console.print("  [dim]model[/dim]               [yellow]downloading[/yellow]")
+        try:
+            download_model()
+        except RuntimeError as e:
+            console.print(f"  [yellow]model[/yellow]               [yellow]failed: {e}[/yellow]")
             console.print(f"  [dim]SQL and FTS will work. Rerun flex init to retry download.[/dim]")
             _model_ok = False
-            _warnings.append(f"Model download: {_dl_err}")
+            _warnings.append(f"Model download: {e}")
     if _model_ok:
         console.print("  [dim]model[/dim]               [green]ok[/green]")
 
@@ -661,7 +657,7 @@ def cmd_init(args):
                     console.print("  For faster indexing, use the Nomic API (~2m, free tier):")
                     console.print("  [bold blue][link=https://atlas.nomic.ai/cli-login]atlas.nomic.ai/cli-login[/link][/bold blue]")
                     console.print()
-                    console.print("  [dim]Ctrl+C is safe —[/dim] [blue]flex init[/blue] [dim]picks up where it left off.[/dim]")
+                    console.print("  [dim]Ctrl+C is safe —[/dim] [magenta]flex init[/magenta] [dim]picks up where it left off.[/dim]")
                     console.print()
                     key = ''.join(c for c in input("  Enter Nomic API key (or press Enter to use local CPU): ") if c.isprintable()).strip()
                     if key:
@@ -843,16 +839,16 @@ def cmd_init(args):
     console.print(Panel(panel_content, padding=(1, 2)))
     console.print()
     console.print("  Ask:")
-    console.print('    [blue]"Use flex: What did we accomplish today?"[/blue]')
-    console.print('    [blue]"Use flex: What\'s the lineage of this file?"[/blue]')
+    console.print('    [cyan]"Use flex: What did we accomplish today?"[/cyan]')
+    console.print('    [cyan]"Use flex: What\'s the lineage of this file?"[/cyan]')
     console.print()
     console.print("  Agent:")
-    console.print('    [blue]"Use flx-trace: What projects am I working on?"[/blue]')
+    console.print('    [cyan]"Use flx-trace: What projects am I working on?"[/cyan]')
     console.print("    [dim]Spawns a dedicated retrieval sub-agent for deeper searches.[/dim]")
     console.print()
     console.print("  Slash commands:")
-    console.print("    [blue]/flex:local[/blue] [dim]— search with the current agent[/dim]")
-    console.print("    [blue]/flex:agent[/blue] [dim]— delegate to flx-trace[/dim]")
+    console.print("    [cyan]/flex:local[/cyan] [dim]— search with the current agent[/dim]")
+    console.print("    [cyan]/flex:agent[/cyan] [dim]— delegate to flx-trace[/dim]")
     console.print()
     console.print("  Control depth by ending your slash command with:")
     console.print("    [dim]go           quick[/dim]")

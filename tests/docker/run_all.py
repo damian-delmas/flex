@@ -79,6 +79,7 @@ SUITES = {
         "image": "flex-test-dirty-conda",
         "timeout": 300,
         "needs_rw_model": False,
+        "cmd_prefix": ["conda", "run", "-n", "testenv", "python3"],
     },
     "dirty-upgrade": {
         "dockerfile": "Dockerfile.dirty-upgrade",
@@ -137,12 +138,13 @@ def _run_suite(name: str, suite: dict) -> dict:
     model_args = _model_mount_args(suite)
 
     runner_parts = suite["runner"].split()
+    cmd_prefix = suite.get("cmd_prefix", ["python3"])
     cmd = [
         "docker", "run", "--rm",
         *model_args,
         "-v", f"{suite_dir}:/tmp:rw",
         suite["image"],
-        "python3", *runner_parts,
+        *cmd_prefix, *runner_parts,
     ]
 
     r = subprocess.run(

@@ -121,7 +121,7 @@ main() {
     PYTHON=$(find_python) || fail "Python ${MIN_PYTHON}+ not found.\n  Mac:    brew install python@3.12\n  Ubuntu: sudo apt install python3.12 python3.12-venv\n  Any:    https://python.org/downloads/"
 
     PYTHON_VER=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-    info "  python    ${PYTHON_VER} ($(command -v "$PYTHON"))"
+    ok "python" "${PYTHON_VER} ($(command -v "$PYTHON"))"
 
     # ── Check dependencies ───────────────────────────────────────
     need_cmd git "Mac: xcode-select --install  Linux: sudo apt install git"
@@ -141,7 +141,7 @@ main() {
     fi
 
     if [ -d "$VENV_DIR" ]; then
-        info "  venv      exists (${VENV_DIR})"
+        ok "venv" "exists"
     else
         _spin_start "venv" "creating"
         mkdir -p "$FLEX_HOME"
@@ -159,7 +159,7 @@ main() {
     local _pkg="getflex"
     if [ -n "${FLEX_VERSION:-}" ]; then
         _pkg="getflex==${FLEX_VERSION}"
-        info "  install   pinned to ${FLEX_VERSION}"
+        ok "install" "pinned to ${FLEX_VERSION}"
     fi
 
     _spin_start "install" "pip install ${_pkg}"
@@ -189,17 +189,14 @@ main() {
     # Only symlink if there's no non-symlink flex binary (e.g. GNU flex)
     if [ ! -e "${BIN_DIR}/flex" ]; then
         ln -s "${VENV_DIR}/bin/flex" "${BIN_DIR}/flex"
-        ok "  link      ${BIN_DIR}/flex"
+        ok "link" "${BIN_DIR}/flex"
     else
-        warn "  link      skipped (${BIN_DIR}/flex exists — may be GNU flex)"
+        warn "link" "skipped (${BIN_DIR}/flex exists — may be GNU flex)"
         info "            use: ${VENV_DIR}/bin/flex"
     fi
 
-    # ── Check PATH ───────────────────────────────────────────────
-    if echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
-        ok "  path      ok"
-    else
-        # Detect shell profile
+    # ── Ensure PATH ──────────────────────────────────────────────
+    if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
         local _profile
         case "${SHELL:-/bin/bash}" in
             */zsh)  _profile="${HOME}/.zshrc" ;;
@@ -208,18 +205,16 @@ main() {
             *)      _profile="${HOME}/.profile" ;;
         esac
 
-        echo ""
-        echo -e "${BOLD}Add to PATH:${RESET} append this to ${_profile}:"
-        echo ""
-        if [ "${SHELL:-}" = "*/fish" ]; then
-            echo "  fish_add_path ${BIN_DIR}"
-        else
-            echo "  export PATH=\"${BIN_DIR}:\$PATH\""
+        if [ -n "$_profile" ]; then
+            if [ "${SHELL:-}" = "*/fish" ]; then
+                echo "fish_add_path ${BIN_DIR}" >> "$_profile"
+            else
+                echo "export PATH=\"${BIN_DIR}:\$PATH\"" >> "$_profile"
+            fi
+            export PATH="${BIN_DIR}:$PATH"
         fi
-        echo ""
-        echo "Then: source ${_profile}"
-        echo ""
     fi
+    ok "path" "ok"
 
     # ── Run flex init ────────────────────────────────────────────
     if [ "$DO_INIT" = true ]; then
@@ -237,7 +232,7 @@ main() {
     fi
 
     echo ""
-    ok "  Done. Restart Claude Code, then type /mcp to verify."
+    echo -e "  ${GREEN}Done.${RESET}"
     echo ""
 }
 

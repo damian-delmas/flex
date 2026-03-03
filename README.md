@@ -50,15 +50,15 @@ Vector databases abstract your embeddings away. Flex keeps embeddings as numpy a
 
 The retrieval engine is published independently as [flexvec](https://github.com/damian-delmas/flexvec) for use in any SQLite database.
 
-Every query runs three steps. No re-ranking pipeline. No post-processing. The agent writes the query.
+Every query runs three steps. The agent writes the query.
 
 ```
 SQL pre-filter  →  NumPy vector operations  →  SQL compose
 ```
 
-**SQL pre-filter.** Any SQL whose first column returns chunk IDs. `WHERE type = 'user_prompt'`. `WHERE session_id LIKE 'abc%'`. `JOIN _edges_file_identity ON file_uuid = ?`. Every table in the database is pre-filter vocabulary. If your WHERE returns 12,000 chunks, NumPy operates on 12,000 vectors — not 148K.
+**SQL pre-filter.** Any SQL whose first column returns chunk IDs. `WHERE type = 'user_prompt'`. `WHERE session_id LIKE 'abc%'`. `JOIN _edges_file_identity ON file_uuid = ?`. Every table in the database is pre-filter vocabulary. If your WHERE returns 12,000 chunks, NumPy operates on 12,000 vectors — not the full corpus.
 
-**NumPy vector operations.** Cosine similarity across the candidate set. Modulation tokens reshape the landscape before selection. `unlike:oauth` penalizes similarity to a concept in embedding space — not a metadata filter, an actual vector operation. `diverse` runs MMR. `recent:7` applies temporal decay.
+**NumPy vector operations.** Cosine similarity across the candidate set. Modulation tokens reshape the landscape before selection. `unlike:oauth` penalizes similarity to a concept in embedding space — not a metadata filter, a vector operation. `diverse` runs MMR. `recent:7` applies temporal decay.
 
 **SQL compose.** Full SQL on 500 candidates. Hub boost. Community filter. JOINs against edge tables. Graph arithmetic. Add a column to your chunks — sentiment, classification, anything — and compose it into queries immediately. For cells with curated views, add the column to the view `.sql` file and run `flex sync`. For auto-generated views, it appears automatically.
 
@@ -90,7 +90,7 @@ hubs:         9d1e3f3d "FlexSearch SQL engine" (centrality: 0.0045)
 presets:      @digest @story @genealogy @file @sprints @bridges ...
 ```
 
-3,000 tokens. Most of which is the schema itself. That's the entire onboarding.
+3,000 tokens. Most of it is the schema itself. That's the entire onboarding.
 
 ---
 
@@ -108,7 +108,7 @@ They compose freely. `diverse unlike:oauth recent:7` — three operations on the
 
 ## Structure Tokens
 
-Run after selection — on the 500 candidates. Add columns SQL compose can use.
+Run after selection on the 500 candidates. Add columns that SQL compose can use.
 
 `local_communities` runs ephemeral Louvain on the candidate set, adds `_community` to each result.
 

@@ -7,7 +7,7 @@ Validates:
   3. Exit code is non-zero on partial completion
   4. flex sync recovers missing layers
   5. Authorizer still blocks writes
-  6. Truncated model file (passes model_ready but crashes on ONNX load)
+  6. Truncated model file (fails model_ready checksum, triggers re-download)
   7. SIGINT mid-embedding + resume completes
 
 Runs in Docker after seed_sessions.py has populated ~/.claude/projects/.
@@ -227,8 +227,8 @@ if registry.exists():
         Path(str(cell_path_7) + "-shm").unlink(missing_ok=True)
     conn.close()
 
-# Write a 1MB truncated file — passes os.path.exists() + model_ready()
-# but fails onnxruntime.InferenceSession() with protobuf/format error
+# Write a 1MB truncated file — fails model_ready() checksum validation,
+# triggering re-download which fails (no network) → non-zero exit
 for p in [model_data, bundled_data]:
     if p.parent.exists():
         p.write_bytes(b"\x00" * (1 << 20))  # 1MB of zeros

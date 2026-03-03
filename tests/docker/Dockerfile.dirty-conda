@@ -12,7 +12,7 @@
 FROM continuumio/miniconda3
 
 RUN conda create -n testenv python=3.12 -y
-RUN apt-get update && apt-get install -y git jq && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y git jq build-essential && rm -rf /var/lib/apt/lists/*
 
 SHELL ["conda", "run", "-n", "testenv", "/bin/bash", "-c"]
 
