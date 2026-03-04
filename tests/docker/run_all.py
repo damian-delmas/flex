@@ -45,8 +45,7 @@ SUITES = {
         "runner": "/run_install_degraded.py",
         "image": "flex-test-e2e",
         "timeout": 300,
-        "needs_rw_model": True,   # must corrupt model — no ro mount
-        "network": "none",        # block downloads so corrupt model stays corrupt
+        "needs_rw_model": "copy",  # copy model into container (rw) so test can corrupt it
     },
     "install": {
         "dockerfile": "Dockerfile.install",
@@ -116,13 +115,20 @@ def _model_cache() -> Path:
 
 
 def _model_mount_args(suite: dict) -> list[str]:
-    """Mount model cache if available and suite allows ro mount."""
-    if suite["needs_rw_model"]:
+    """Mount model cache if available. Supports ro, rw copy, or no mount."""
+    rw = suite.get("needs_rw_model", False)
+    if rw is True:  # legacy: skip mount entirely
         return []
     cache = _model_cache()
-    if cache.exists() and (cache / "model.onnx").exists():
-        return ["-v", f"{cache}:/root/.flex/models:ro"]
-    return []
+    if not cache.exists() or not (cache / "model.onnx").exists():
+        return []
+    if rw == "copy":
+        # Copy to a temp dir so container gets a writable copy
+        import tempfile
+        tmp = Path(tempfile.mkdtemp(prefix="flex-model-"))
+        shutil.copytree(cache, tmp / "models")
+        return ["-v", f"{tmp / 'models'}:/root/.flex/models:rw"]
+    return ["-v", f"{cache}:/root/.flex/models:ro"]
 
 
 def _build_image(dockerfile: str, image: str) -> tuple[bool, str]:

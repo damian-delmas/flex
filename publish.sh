@@ -121,7 +121,6 @@ rm -rf "$_deploy_dir"
 
 # Cleanup
 git checkout -f dev
-git clean -fd flex/ tests/ .github/
 git branch -D "$BRANCH"
 git tag -d "v$VERSION"
 
