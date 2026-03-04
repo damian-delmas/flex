@@ -104,14 +104,18 @@ git tag -f "v$VERSION"
 git push "$REMOTE" "$BRANCH:$TARGET"
 git push "$REMOTE" "v$VERSION" --force
 
-# Deploy install.sh to getflex.dev
-echo "Deploying install.sh to getflex.dev..."
+# Deploy install.sh + landing page to getflex.dev
+echo "Deploying to getflex.dev..."
 _deploy_dir=$(mktemp -d)
 cp install.sh "$_deploy_dir/install.sh"
-if npx wrangler pages deploy "$_deploy_dir" --project-name getflex-site --commit-dirty=true 2>&1 | tail -1; then
-    echo "install.sh deployed"
+_website_dir="$HOME/projects/flex/website/main"
+if [[ -f "$_website_dir/getflexdotdev.html" ]]; then
+    cp "$_website_dir/getflexdotdev.html" "$_deploy_dir/index.html"
+fi
+if npx wrangler pages deploy "$_deploy_dir" --project-name getflex-site --branch main --commit-dirty=true 2>&1 | tail -1; then
+    echo "getflex.dev deployed"
 else
-    echo "WARNING: Cloudflare deploy failed — install.sh not updated"
+    echo "WARNING: Cloudflare deploy failed — getflex.dev not updated"
 fi
 rm -rf "$_deploy_dir"
 

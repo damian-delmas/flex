@@ -686,6 +686,9 @@ def cmd_init(args):
     jsonls = list(CLAUDE_PROJECTS.rglob("*.jsonl"))
     _enrich_failures: list[str] = []
 
+    # Always bootstrap cell (even if empty) so flex search works immediately
+    cell_path = bootstrap_claude_code_cell()
+
     if not jsonls:
         console.print("  [dim]No Claude Code sessions found.[/dim]")
         console.print("  [dim]Sessions index automatically as you use Claude Code.[/dim]")
@@ -694,7 +697,6 @@ def cmd_init(args):
         console.print(f"  Indexing [bold]{len(jsonls):,}[/bold] sessions")
         console.print()
 
-        cell_path = bootstrap_claude_code_cell()
         conn = _sqlite3.connect(str(cell_path), timeout=30.0)
         try:
             conn.row_factory = _sqlite3.Row
