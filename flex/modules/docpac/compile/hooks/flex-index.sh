@@ -24,4 +24,6 @@ FILE_PATH=$(jq -r '.tool_input.file_path // empty' 2>/dev/null)
 # Queue file for indexing (SQLite WAL — dedup via UNIQUE on path)
 QUEUE_DB="$HOME/.flex/queue.db"
 mkdir -p "$(dirname "$QUEUE_DB")"
-sqlite3 "$QUEUE_DB" ".timeout 3000" "CREATE TABLE IF NOT EXISTS pending (path TEXT PRIMARY KEY, ts INTEGER); INSERT OR REPLACE INTO pending VALUES ('$FILE_PATH', $(date +%s))" 2>/dev/null
+# Escape single quotes in path for SQLite string literal
+_SAFE_PATH="${FILE_PATH//\'/\'\'}"
+sqlite3 "$QUEUE_DB" ".timeout 3000" "CREATE TABLE IF NOT EXISTS pending (path TEXT PRIMARY KEY, ts INTEGER); INSERT OR REPLACE INTO pending VALUES ('${_SAFE_PATH}', $(date +%s))" 2>/dev/null

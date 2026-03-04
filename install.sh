@@ -206,11 +206,14 @@ main() {
         esac
 
         if [ -n "$_profile" ]; then
-            if [ "${SHELL:-}" = "*/fish" ]; then
-                echo "fish_add_path ${BIN_DIR}" >> "$_profile"
-            else
-                echo "export PATH=\"${BIN_DIR}:\$PATH\"" >> "$_profile"
-            fi
+            case "${SHELL:-}" in
+                */fish)
+                    echo "fish_add_path ${BIN_DIR}" >> "$_profile"
+                    ;;
+                *)
+                    echo "export PATH=\"${BIN_DIR}:\$PATH\"" >> "$_profile"
+                    ;;
+            esac
             export PATH="${BIN_DIR}:$PATH"
         fi
     fi

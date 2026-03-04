@@ -33,9 +33,10 @@ else:
 
 result = subprocess.run(
     init_cmd,
-    capture_output=False,   # let output stream to terminal
+    capture_output=True, text=True,
     timeout=600,
 )
+h.artifact("flex_init", result.stdout + result.stderr)
 
 # ── Filesystem ────────────────────────────────────────────────────────────────
 h.phase("Filesystem")
@@ -448,6 +449,7 @@ if shutil.which("flex-serve"):
         ["flex", "init", "--local"],
         capture_output=True, text=True, timeout=600,
     )
+    h.artifact("flex_init_incremental", r_inc.stdout + r_inc.stderr)
     h.check("incremental: re-init exit 0", r_inc.returncode == 0,
             f"exit {r_inc.returncode}")
 
@@ -525,6 +527,7 @@ if shutil.which("flex-serve"):
         ["flex", "init", "--local"],
         capture_output=True, text=True, timeout=600,
     )
+    h.artifact("flex_init_sync", r_init2.stdout + r_init2.stderr)
     h.check("sync: re-init exit 0", r_init2.returncode == 0,
             f"exit {r_init2.returncode}")
 
@@ -532,6 +535,7 @@ if shutil.which("flex-serve"):
         ["flex", "sync"],
         capture_output=True, text=True, timeout=60,
     )
+    h.artifact("flex_sync", r_sync.stdout + r_sync.stderr)
     h.check("sync: flex sync exit 0", r_sync.returncode == 0,
             f"exit {r_sync.returncode}: {r_sync.stderr[:200]}")
 

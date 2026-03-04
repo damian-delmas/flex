@@ -42,12 +42,12 @@ h.phase("Phase 2: flex init --local")
 t0 = time.time()
 init_result = subprocess.run(
     ["flex", "init", "--local"],
-    capture_output=False,
+    capture_output=True, text=True,
     timeout=600,
 )
 elapsed = time.time() - t0
+h.artifact("flex_init", init_result.stdout + init_result.stderr)
 
-print()
 h.check("flex init exit 0", init_result.returncode == 0,
         f"exit code {init_result.returncode}")
 print(f"  (completed in {elapsed:.1f}s)")

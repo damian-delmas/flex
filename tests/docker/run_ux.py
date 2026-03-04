@@ -33,6 +33,7 @@ r = subprocess.run(
     capture_output=True, text=True, timeout=600,
 )
 output = r.stdout + r.stderr
+h.artifact("flex_init", output)
 
 # Onboarding panel
 h.check("panel: 'Flex is ready'", "Flex is ready" in output)

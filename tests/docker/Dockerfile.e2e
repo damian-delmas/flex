@@ -50,5 +50,6 @@ COPY tests/docker/harness.py /harness.py
 COPY tests/docker/run_e2e.py /run_e2e.py
 COPY tests/docker/run_install_degraded.py /run_install_degraded.py
 COPY tests/docker/run_ux.py /run_ux.py
+COPY tests/docker/run_mcp_claude.py /run_mcp_claude.py
 
 CMD ["python3", "/run_e2e.py"]

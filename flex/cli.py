@@ -99,7 +99,13 @@ def _patch_settings_json():
     """Non-destructively add hook entries to ~/.claude/settings.json."""
     settings_path = CLAUDE_DIR / "settings.json"
     if settings_path.exists():
-        settings = json.loads(settings_path.read_text())
+        try:
+            settings = json.loads(settings_path.read_text())
+        except (json.JSONDecodeError, ValueError):
+            backup = settings_path.with_suffix('.json.bak')
+            settings_path.rename(backup)
+            print(f"  [warn] Corrupt {settings_path.name} — backed up to {backup.name}", file=sys.stderr)
+            settings = {}
     else:
         CLAUDE_DIR.mkdir(parents=True, exist_ok=True)
         settings = {}
@@ -198,11 +204,18 @@ def _install_systemd():
     for service_name, content in _SYSTEMD_UNITS.items():
         (SYSTEMD_DIR / service_name).write_text(content)
 
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-    subprocess.run(
-        ["systemctl", "--user", "enable", "--now", "flex-worker", "flex-mcp"],
-        check=True,
-    )
+    for cmd, label in [
+        (["systemctl", "--user", "daemon-reload"], "daemon-reload"),
+        (["systemctl", "--user", "enable", "--now", "flex-worker", "flex-mcp"], "enable services"),
+    ]:
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=15)
+        except subprocess.CalledProcessError as e:
+            print(f"  [warn] systemd {label}: {e.stderr.decode().strip()}", file=sys.stderr)
+            return False
+        except subprocess.TimeoutExpired:
+            print(f"  [warn] systemd {label}: timeout", file=sys.stderr)
+            return False
     return True
 
 
@@ -277,21 +290,111 @@ def _install_launchd():
 
     (FLEX_HOME / "logs").mkdir(exist_ok=True)
 
+    uid = os.getuid()
     for name, content in _LAUNCHD_PLISTS.items():
         plist_path = LAUNCHD_DIR / name
-        # Unload existing before overwriting
-        if plist_path.exists():
-            subprocess.run(
-                ["launchctl", "unload", str(plist_path)],
-                capture_output=True, timeout=10,
-            )
-        plist_path.write_text(content)
+        label = name.replace(".plist", "")
+        # Bootout existing (ignore errors if not loaded)
         subprocess.run(
-            ["launchctl", "load", str(plist_path)],
+            ["launchctl", "bootout", f"user/{uid}/{label}"],
             capture_output=True, timeout=10,
         )
+        plist_path.write_text(content)
+        result = subprocess.run(
+            ["launchctl", "bootstrap", f"user/{uid}", str(plist_path)],
+            capture_output=True, timeout=10,
+        )
+        if result.returncode != 0:
+            print(f"  [warn] launchctl bootstrap {name}: {result.stderr.decode().strip()}", file=sys.stderr)
 
     return True
+
+
+def _is_port_open(port: int) -> bool:
+    """Check if a TCP port is accepting connections on localhost."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _is_worker_alive() -> bool:
+    """Check if worker daemon is running via PID file or process scan."""
+    pid_file = FLEX_HOME / "worker.pid"
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)  # signal 0 = existence check
+            return True
+        except (ValueError, OSError):
+            pid_file.unlink(missing_ok=True)
+    # Fallback: scan process table
+    try:
+        r = subprocess.run(
+            ["pgrep", "-f", "flex.modules.claude_code.compile.worker.*--daemon"],
+            capture_output=True, timeout=5,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _verify_services() -> tuple:
+    """Check if worker and MCP are actually running. Returns (worker_ok, mcp_ok)."""
+    # MCP: retry port check (service may still be starting)
+    mcp_ok = False
+    for _ in range(6):  # 3 seconds max
+        if _is_port_open(7134):
+            mcp_ok = True
+            break
+        time.sleep(0.5)
+
+    worker_ok = _is_worker_alive()
+    return worker_ok, mcp_ok
+
+
+def _start_services_direct():
+    """Start worker + MCP as background processes. Last resort fallback."""
+    python = sys.executable
+    log_dir = FLEX_HOME / "logs"
+    log_dir.mkdir(exist_ok=True)
+
+    def _start(name, cmd, pid_file, log_file):
+        # Don't start if already running
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text().strip()), 0)
+                return  # already running
+            except (ValueError, OSError):
+                pid_file.unlink(missing_ok=True)
+
+        with open(log_file, "a") as out, open(log_file.with_suffix(".err"), "a") as err:
+            proc = subprocess.Popen(cmd, stdout=out, stderr=err, start_new_session=True)
+        pid_file.write_text(str(proc.pid))
+
+    if not _is_worker_alive():
+        _start("worker",
+               [python, "-m", "flex.modules.claude_code.compile.worker", "--daemon"],
+               FLEX_HOME / "worker.pid", log_dir / "worker.log")
+
+    if not _is_port_open(7134):
+        _start("mcp",
+               [python, "-m", "flex.mcp_server", "--http", "--port", "7134"],
+               FLEX_HOME / "mcp.pid", log_dir / "mcp.log")
+
+
+def _kill_pid_services():
+    """Kill any directly-started services by PID file. Ensures clean handoff to service manager."""
+    import signal
+    for pid_name in ["worker.pid", "mcp.pid"]:
+        pid_file = FLEX_HOME / pid_name
+        if pid_file.exists():
+            try:
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+            except (ValueError, OSError):
+                pass
+            pid_file.unlink(missing_ok=True)
 
 
 def _patch_claude_json():
@@ -302,7 +405,13 @@ def _patch_claude_json():
     sessions. Services (systemd/launchd) keep it running.
     """
     if CLAUDE_JSON.exists():
-        data = json.loads(CLAUDE_JSON.read_text())
+        try:
+            data = json.loads(CLAUDE_JSON.read_text())
+        except (json.JSONDecodeError, ValueError):
+            backup = CLAUDE_JSON.with_suffix('.json.bak')
+            CLAUDE_JSON.rename(backup)
+            print(f"  [warn] Corrupt {CLAUDE_JSON.name} — backed up to {backup.name}", file=sys.stderr)
+            data = {}
     else:
         data = {}
 
@@ -313,76 +422,6 @@ def _patch_claude_json():
         _safe_write(CLAUDE_JSON, json.dumps(data, indent=2) + "\n")
         return True
     return False
-
-
-def _run_enrichment(conn):
-    """Run post-backfill enrichment pipeline.
-
-    Each phase is independent — a failure in graph building does not prevent
-    presets and views from being installed (which are required for @orient).
-    """
-    import time as _time
-    t0 = time.time()
-
-    try:
-        from flex.modules.claude_code.manage.rebuild_all import (
-            rebuild_warmup_types, reembed_sources, rebuild_source_graph,
-        )
-        from flex.modules.claude_code.manage.enrich_summary import run as run_fingerprints
-        from flex.modules.claude_code.manage.enrich_repo_project import run as run_repo_project
-        from flex.views import regenerate_views, install_views
-        from flex.manage.install_presets import install_cell as install_presets_cell
-    except ImportError as e:
-        print(f"  [skip] enrichment unavailable: {e}")
-        return
-
-    print("  Enriching...")
-
-    # Phase 1: Graph enrichments — each step independent
-    for step, fn, label in [
-        ("warmup",  lambda: rebuild_warmup_types(conn),     "warmup detection"),
-        ("reembed", lambda: reembed_sources(conn),          "source pooling"),
-        ("graph",   lambda: rebuild_source_graph(conn),     "graph built"),
-    ]:
-        try:
-            fn()
-            print(f"  [ok] {label}")
-        except Exception as e:
-            print(f"  [warn] {label} skipped: {e}")
-
-    # Phase 2: Session fingerprints
-    try:
-        n_fp = run_fingerprints(conn)
-        print(f"  [ok] {n_fp} sessions fingerprinted")
-    except Exception as e:
-        print(f"  [warn] fingerprints skipped: {e}")
-
-    # Phase 3: Repo attribution
-    try:
-        n_rp = run_repo_project(conn)
-        print(f"  [ok] {n_rp} sources attributed")
-    except Exception as e:
-        print(f"  [warn] repo attribution skipped: {e}")
-
-    # Phase 4: Presets + views — always runs, required for @orient
-    try:
-        install_presets_cell('claude_code')
-        print("  [ok] presets installed")
-    except Exception as e:
-        print(f"  [warn] presets install failed: {e}")
-
-    try:
-        view_dir = _find_view_dir('claude_code', 'claude-code')
-        if view_dir:
-            install_views(conn, view_dir)
-            print("  [ok] curated views installed")
-        regenerate_views(conn)
-        conn.commit()
-        print("  [ok] views generated")
-    except Exception as e:
-        print(f"  [warn] views install failed: {e}")
-
-    print(f"  [ok] enrichment done in {time.time()-t0:.0f}s")
 
 
 def _run_enrichment_quiet(conn, progress_cb=None) -> tuple[int, list[str]]:
@@ -462,6 +501,91 @@ def _run_enrichment_quiet(conn, progress_cb=None) -> tuple[int, list[str]]:
         return 0, failures
 
 
+def _prompt_nomic_key(console, est_unembedded: int, flex_home: Path, args):
+    """Prompt for Nomic API key if CPU-only and large corpus. Returns embedder or None."""
+    import threading
+
+    from flex.onnx.embed import has_gpu
+    if has_gpu():
+        return None
+
+    from flex.onnx.nomic_embed import NomicEmbedder
+
+    secrets_path = flex_home / "secrets"
+    saved_key = None
+    if secrets_path.exists():
+        for line in secrets_path.read_text().splitlines():
+            if line.startswith("NOMIC_API_KEY="):
+                saved_key = line.split("=", 1)[1].strip()
+                break
+    env_key = os.environ.get("NOMIC_API_KEY", "").strip()
+    flag_key = getattr(args, 'nomic_key', None) or ''
+    force_local = getattr(args, 'local', False)
+    key = saved_key or flag_key or env_key
+
+    if force_local:
+        return None
+    elif key:
+        ne = NomicEmbedder(key)
+        err = ne.validate()
+        if err:
+            console.print(f"  [yellow]Nomic key invalid: {err}[/yellow]")
+            console.print("  Falling back to local CPU.")
+            return None
+        return ne
+    elif not sys.stdin.isatty():
+        console.print("  [dim]Non-interactive terminal detected, using local CPU.[/dim]")
+        console.print("  [dim]For faster embeddings: flex init --nomic-key <key>[/dim]")
+        return None
+
+    # Interactive prompt
+    est_secs = est_unembedded / 27
+    est_str = f"~{est_secs / 60:.0f}m" if est_secs < 3600 else f"~{est_secs / 3600:.1f}h"
+    console.print("  No GPU detected.")
+    console.print(f"  Estimated time to build your vectors on CPU: {est_str}.")
+    console.print()
+    console.print("  For faster indexing, use the Nomic API (~2m, free tier):")
+    console.print("  [bold blue][link=https://atlas.nomic.ai/cli-login]atlas.nomic.ai/cli-login[/link][/bold blue]")
+    console.print()
+    console.print("  [dim]Ctrl+C is safe —[/dim] [cyan]flex init[/cyan] [dim]picks up where it left off.[/dim]")
+    console.print()
+    key = ''.join(c for c in input("  Enter Nomic API key (or press Enter to use local CPU): ") if c.isprintable()).strip()
+    if not key:
+        console.print()
+        return None
+
+    ne = NomicEmbedder(key)
+    done_event = threading.Event()
+    def _spin():
+        frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+        i = 0
+        while not done_event.is_set():
+            sys.stdout.write(f"\r  {frames[i % len(frames)]} Validating key...")
+            sys.stdout.flush()
+            done_event.wait(0.1)
+            i += 1
+    spin_thread = threading.Thread(target=_spin, daemon=True)
+    spin_thread.start()
+    err = ne.validate()
+    done_event.set()
+    spin_thread.join()
+    if err:
+        sys.stdout.write(f"\r  ⚠  Key invalid: {err}\n")
+        sys.stdout.write("  Falling back to local CPU.\n")
+        sys.stdout.flush()
+        console.print()
+        return None
+
+    sys.stdout.write("\r  ✓  Nomic API ready.     \n")
+    sys.stdout.flush()
+    # Persist key
+    lines = [l for l in (secrets_path.read_text().splitlines() if secrets_path.exists() else []) if not l.startswith("NOMIC_API_KEY=")]
+    lines.append(f"NOMIC_API_KEY={key}")
+    secrets_path.write_text("\n".join(lines) + "\n")
+    console.print()
+    return ne
+
+
 def cmd_init(args):
     """Wire hooks, daemon, and MCP for Claude Code capture."""
     import io
@@ -478,7 +602,23 @@ def cmd_init(args):
     _warnings: list[str] = []  # accumulate phase failures for exit code
 
     console.print()
-    console.print("  [bold]Setting up flex...[/bold]")
+
+    # 0. Pre-flight: check system deps before doing anything
+    _sudo = "" if getattr(os, 'geteuid', lambda: 1)() == 0 else "sudo "
+    _missing_sys = [b for b in ("jq", "git") if not shutil.which(b)]
+    if _missing_sys:
+        console.print("  [yellow]Missing system dependencies — run first:[/yellow]")
+        console.print()
+        if shutil.which("brew"):
+            console.print(f"  [bold]brew install {' '.join(_missing_sys)}[/bold]")
+        else:
+            console.print(f"  [bold]{_sudo}apt install {' '.join(_missing_sys)}[/bold]")
+        console.print()
+        console.print("  Then re-run: [bold]flex init[/bold]")
+        console.print()
+        return
+
+    console.print("  [cyan]Setting up flex[/cyan]...", highlight=False)
     console.print()
 
     # 1. Storage
@@ -513,14 +653,14 @@ def cmd_init(args):
         except Exception as e:
             print(f"[init] SOMA init: {e}", file=sys.stderr)
 
-    console.print("  [dim]storage[/dim]             [green]ok[/green]")
+    console.print("  storage             [green]ok[/green]")
 
     # 2. Model
     from flex.onnx.fetch import download_model, model_ready
     _model_ok = True
     _model_valid = model_ready()
     if not _model_valid:
-        console.print("  [dim]model[/dim]               [yellow]downloading[/yellow]")
+        console.print("  model               [yellow]downloading[/yellow]")
         try:
             download_model()
         except RuntimeError as e:
@@ -529,30 +669,13 @@ def cmd_init(args):
             _model_ok = False
             _warnings.append(f"Model download: {e}")
     if _model_ok:
-        console.print("  [dim]model[/dim]               [green]ok[/green]")
+        console.print("  model               [green]ok[/green]")
 
-    # 3. Pre-flight: check system deps before doing anything
-    import shutil as _shutil, os as _os
-    _sudo = "" if getattr(_os, 'geteuid', lambda: 1)() == 0 else "sudo "
-    _missing_sys = [b for b in ("jq", "git") if not _shutil.which(b)]
-    if _missing_sys:
-        console.print()
-        console.print("  [yellow]Missing system dependencies — run first:[/yellow]")
-        console.print()
-        if _shutil.which("brew"):
-            console.print(f"  [bold]brew install {' '.join(_missing_sys)}[/bold]")
-        else:
-            console.print(f"  [bold]{_sudo}apt install {' '.join(_missing_sys)}[/bold]")
-        console.print()
-        console.print("  Then re-run: [bold]flex init[/bold]")
-        console.print()
-        return
-
-    # 3b. Hooks + settings + claude assets
+    # 3. Hooks + settings + claude assets
     _install_hooks()
     _patch_settings_json()
     _install_claude_assets()
-    console.print("  [dim]capture[/dim]             [green]ok[/green]")
+    console.print("  capture             [green]ok[/green]")
     console.print()
 
     # 4. Sessions
@@ -573,255 +696,188 @@ def cmd_init(args):
 
         cell_path = bootstrap_claude_code_cell()
         conn = _sqlite3.connect(str(cell_path), timeout=30.0)
-        conn.row_factory = _sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=30000")
-
-        # Install enrichment stubs — ensures tables exist even if enrichment fails
-        for ddl in _ENRICHMENT_STUBS.get('claude-code', []):
-            conn.execute(ddl)
-        conn.commit()
-
-        # Install views + presets early (only need stub tables to exist)
         try:
-            from flex.views import install_views as _iv, regenerate_views as _rv
-            from flex.manage.install_presets import install_cell as _install_presets_cell
-            _vd = _find_view_dir('claude_code', 'claude-code')
-            if _vd:
-                _iv(conn, _vd)
-            _rv(conn)
-            _install_presets_cell('claude_code')
+            conn.row_factory = _sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+
+            # Install enrichment stubs — ensures tables exist even if enrichment fails
+            for ddl in _ENRICHMENT_STUBS.get('claude-code', []):
+                conn.execute(ddl)
             conn.commit()
-        except Exception as e:
-            print(f"[init] Views/presets install failed: {e}", file=sys.stderr)
-            _warnings.append(f"Views/presets: {e}")
 
-        # Seed from existing cell for resume display — show resume hint
-        _already = conn.execute("SELECT COUNT(*) FROM _raw_sources").fetchone()[0]
-        if _already > 0:
-            console.print(f"  [dim]({_already:,} already indexed, resuming)[/dim]")
-            console.print()
-        _existing_chunks = conn.execute("SELECT COUNT(*) FROM _raw_chunks").fetchone()[0]
-        _already_embedded = conn.execute(
-            "SELECT COUNT(*) FROM _raw_chunks WHERE embedding IS NOT NULL"
-        ).fetchone()[0]
-        _phase = {"sessions": _already, "chunks": _existing_chunks}
-
-        _nomic_embedder = [None]  # set below if user provides a Nomic API key
-
-        # Prompt for Nomic key BEFORE scanning so user can walk away.
-        # Skip entirely if model download failed — no point prompting.
-        # Estimate unembedded chunks from unprocessed session count (avg ~50 chunks/session).
-        _est_unembedded = (_existing_chunks - _already_embedded) + (len(jsonls) - _already) * 50
-        try:
-            from flex.onnx.embed import has_gpu as _has_gpu
-            if _model_ok and not _has_gpu() and _est_unembedded > 10_000:
-                import threading as _threading
-                from flex.onnx.nomic_embed import NomicEmbedder as _NomicEmbedder
-                _flex_cfg = FLEX_HOME / "secrets"
-                _saved_key = None
-                if _flex_cfg.exists():
-                    for _line in _flex_cfg.read_text().splitlines():
-                        if _line.startswith("NOMIC_API_KEY="):
-                            _saved_key = _line.split("=", 1)[1].strip()
-                            break
-                _env_key = os.environ.get("NOMIC_API_KEY", "").strip()
-                _flag_key = getattr(args, 'nomic_key', None) or ''
-                _force_local = getattr(args, 'local', False)
-                key = _saved_key or _flag_key or _env_key
-
-                if _force_local:
-                    key = ''  # explicit --local: skip Nomic entirely
-                elif key:
-                    _ne = _NomicEmbedder(key)
-                    _err = _ne.validate()
-                    if _err:
-                        console.print(f"  [yellow]Nomic key invalid: {_err}[/yellow]")
-                        console.print("  Falling back to local CPU.")
-                        key = ''
-                    else:
-                        _nomic_embedder[0] = _ne
-                elif not sys.stdin.isatty():
-                    # Non-interactive (Docker, CI, PTY tools) — fall through to CPU
-                    console.print("  [dim]Non-interactive terminal detected, using local CPU.[/dim]")
-                    console.print("  [dim]For faster embeddings: flex init --nomic-key <key>[/dim]")
-                    key = ''
-
-                if not key and not _force_local and not _nomic_embedder[0] and sys.stdin.isatty():
-                    est_secs = _est_unembedded / 27
-                    est_str = f"~{est_secs / 60:.0f}m" if est_secs < 3600 else f"~{est_secs / 3600:.1f}h"
-                    console.print("  No GPU detected.")
-                    console.print(f"  Estimated time to build your vectors on CPU: {est_str}.")
-                    console.print()
-                    console.print("  For faster indexing, use the Nomic API (~2m, free tier):")
-                    console.print("  [bold blue][link=https://atlas.nomic.ai/cli-login]atlas.nomic.ai/cli-login[/link][/bold blue]")
-                    console.print()
-                    console.print("  [dim]Ctrl+C is safe —[/dim] [magenta]flex init[/magenta] [dim]picks up where it left off.[/dim]")
-                    console.print()
-                    key = ''.join(c for c in input("  Enter Nomic API key (or press Enter to use local CPU): ") if c.isprintable()).strip()
-                    if key:
-                        _ne = _NomicEmbedder(key)
-                        import sys as _sys
-                        _done_event = _threading.Event()
-                        def _spin():
-                            frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
-                            i = 0
-                            while not _done_event.is_set():
-                                _sys.stdout.write(f"\r  {frames[i % len(frames)]} Validating key...")
-                                _sys.stdout.flush()
-                                _done_event.wait(0.1)
-                                i += 1
-                        _spin_thread = _threading.Thread(target=_spin, daemon=True)
-                        _spin_thread.start()
-                        _err = _ne.validate()
-                        _done_event.set()
-                        _spin_thread.join()
-                        if _err:
-                            _sys.stdout.write(f"\r  ⚠  Key invalid: {_err}\n")
-                            _sys.stdout.write("  Falling back to local CPU.\n")
-                            _sys.stdout.flush()
-                        else:
-                            _nomic_embedder[0] = _ne
-                            _sys.stdout.write("\r  ✓  Nomic API ready.     \n")
-                            _sys.stdout.flush()
-                            _lines = [l for l in (_flex_cfg.read_text().splitlines() if _flex_cfg.exists() else []) if not l.startswith("NOMIC_API_KEY=")]
-                            _lines.append(f"NOMIC_API_KEY={key}")
-                            _flex_cfg.write_text("\n".join(_lines) + "\n")
-                    console.print()
-        except Exception as e:
-            print(f"[init] Nomic setup: {e}", file=sys.stderr)
-            # fall through to local ONNX
-
-        with Progress(
-            TextColumn("  [dim]{task.description:<20}[/dim]"),
-            SpinnerColumn(spinner_name="dots", style="yellow", finished_text="[green]✓[/green]"),
-            BarColumn(bar_width=20, complete_style="green", finished_style="green"),
-            TextColumn("[dim]{task.fields[info]}[/dim]"),
-            console=console,
-            transient=False,
-        ) as progress:
-            t_read  = progress.add_task("Scanning sessions", total=len(jsonls), info="",
-                                        completed=_already)
-            t_index = progress.add_task("Building vectors",  total=None,        info="", visible=False)
-            t_graph = progress.add_task("Building graph",    total=None,        info="", visible=False)
-
-            _scan_start = [None]
-
-            def _eta_str(done, total, start):
-                if start is None or done < 1:
-                    return "calculating..."
-                rate = done / (time.time() - start)
-                if rate <= 0:
-                    return "calculating..."
-                secs = (total - done) / rate
-                if secs < 60:
-                    return f"~{secs:.0f}s left"
-                elif secs < 3600:
-                    return f"~{secs/60:.0f}m left"
-                else:
-                    return f"~{secs/3600:.1f}h left"
-
-            def _progress(i, total, sessions, chunks, elapsed):
-                if _scan_start[0] is None:
-                    _scan_start[0] = time.time()
-                eta = _eta_str(_already + i, len(jsonls), _scan_start[0]) if i >= 5 else "calculating..."
-                progress.update(t_read, completed=_already + i,
-                                info=f"{_already + i:,} / {len(jsonls):,} sessions   {eta}")
-                _phase["sessions"] = sessions
-                _phase["chunks"]   = chunks
-
-            def _phase2(sessions, chunks, elapsed):
-                progress.update(t_read, completed=len(jsonls),
-                                info=f"{len(jsonls):,} sessions scanned")
-                _phase["sessions"] = sessions
-                _phase["chunks"]   = chunks
-
-                progress.update(t_index, visible=True,
-                                completed=_already_embedded, total=_existing_chunks,
-                                info=f"{_already_embedded:,} / {_existing_chunks:,} chunks   calculating...")
-
-            _embed_start = [None]
-
-            def _embed_progress(done, total):
-                if _embed_start[0] is None and done > 0:
-                    _embed_start[0] = time.time()
-                abs_done  = _already_embedded + done
-                abs_total = _already_embedded + total
-                if _embed_start[0] and (time.time() - _embed_start[0]) >= 15:
-                    eta = _eta_str(done, total, _embed_start[0])
-                else:
-                    eta = "calculating..."
-                progress.update(t_index, completed=abs_done, total=abs_total,
-                                info=f"{abs_done:,} / {abs_total:,} chunks   {eta}")
-
-            buf2 = io.StringIO()
-            with contextlib.redirect_stderr(buf2):
-                try:
-                    stats = initial_backfill(conn, progress_cb=_progress, phase2_cb=_phase2,
-                                             quiet_embed=True, embed_progress_cb=_embed_progress,
-                                             embedder_ref=_nomic_embedder,
-                                             skip_embed=not _model_ok)
-                except Exception as e:
-                    console.print(f"  [yellow]Backfill error: {e}[/yellow]")
-                    _warnings.append(f"Backfill: {e}")
-                    stats = {'sessions': _phase.get('sessions', 0),
-                             'chunks': _phase.get('chunks', 0),
-                             'elapsed': 0, 'embed_ok': False}
-
-            if not stats.get('embed_ok', True):
-                _warnings.append("Embedding incomplete — vec_ops disabled until re-embedded")
-                progress.update(t_index, completed=stats['chunks'], total=stats['chunks'],
-                                info=f"{stats['chunks']:,} chunks (embedding skipped)")
-            else:
-                progress.update(t_index, completed=stats['chunks'], total=stats['chunks'],
-                                info=f"{stats['chunks']:,} chunks embedded")
-
-            # Graph + enrichment (spinner, fully silent)
-            progress.update(t_graph, visible=True, info="analyzing")
-            def _graph_cb(label):
-                progress.update(t_graph, info=label)
+            # Install views + presets early (only need stub tables to exist)
             try:
-                n_clusters, _enrich_failures = _run_enrichment_quiet(conn, progress_cb=_graph_cb)
+                from flex.views import install_views as _iv, regenerate_views as _rv
+                from flex.manage.install_presets import install_cell as _install_presets_cell
+                _vd = _find_view_dir('claude_code', 'claude-code')
+                if _vd:
+                    _iv(conn, _vd)
+                _rv(conn)
+                _install_presets_cell('claude_code')
+                conn.commit()
             except Exception as e:
-                console.print(f"  [yellow]Enrichment error: {e}[/yellow]")
-                _warnings.append(f"Enrichment: {e}")
-                n_clusters, _enrich_failures = 0, []
-            cluster_info = f"{n_clusters} topic clusters found" if n_clusters else "done"
-            progress.update(t_graph, total=1, completed=1, info=cluster_info)
+                print(f"[init] Views/presets install failed: {e}", file=sys.stderr)
+                _warnings.append(f"Views/presets: {e}")
 
-        console.print()
-        console.print(
-            f"  [bold]{stats['sessions']:,} sessions[/bold] · "
-            f"[bold]{stats['chunks']:,} chunks[/bold]"
-            + (f" · [bold]{n_clusters}[/bold] topic clusters" if n_clusters else "")
-        )
-        if _enrich_failures:
-            for _f in _enrich_failures:
-                _warnings.append(f"Enrichment: {_f} skipped")
-        console.print()
-        try:
-            from flex.core import log_op
-            log_op(conn, 'init_complete', 'claude_code', rows_affected=stats['chunks'])
-        except Exception as e:
-            print(f"[init] log_op: {e}", file=sys.stderr)
+            # Seed from existing cell for resume display — show resume hint
+            _already = conn.execute("SELECT COUNT(*) FROM _raw_sources").fetchone()[0]
+            if _already > 0:
+                console.print(f"  [dim]({_already:,} already indexed, resuming)[/dim]")
+                console.print()
+            _existing_chunks = conn.execute("SELECT COUNT(*) FROM _raw_chunks").fetchone()[0]
+            _already_embedded = conn.execute(
+                "SELECT COUNT(*) FROM _raw_chunks WHERE embedding IS NOT NULL"
+            ).fetchone()[0]
+            _phase = {"sessions": _already, "chunks": _existing_chunks}
 
-        try:
-            from tzlocal import get_localzone
-            _tz = str(get_localzone())
-        except Exception:
-            import datetime as _dt
-            _tz = _dt.datetime.now().astimezone().tzname() or 'UTC'
-        conn.execute("INSERT OR REPLACE INTO _meta(key, value) VALUES ('timezone', ?)", [_tz])
-        conn.commit()
+            _nomic_embedder = [None]  # set below if user provides a Nomic API key
 
-        conn.close()
+            # Prompt for Nomic key BEFORE scanning so user can walk away.
+            # Skip entirely if model download failed — no point prompting.
+            _est_unembedded = (_existing_chunks - _already_embedded) + (len(jsonls) - _already) * 50
+            if _model_ok and _est_unembedded > 10_000:
+                try:
+                    _nomic_embedder[0] = _prompt_nomic_key(console, _est_unembedded, FLEX_HOME, args)
+                except Exception as e:
+                    print(f"[init] Nomic setup: {e}", file=sys.stderr)
+
+            with Progress(
+                TextColumn("  {task.description:<20}"),
+                SpinnerColumn(spinner_name="dots", finished_text="[green]✓[/green]"),
+                BarColumn(bar_width=20, complete_style="white", finished_style="green"),
+                TextColumn("{task.fields[info]}"),
+                console=console,
+                transient=False,
+            ) as progress:
+                t_read  = progress.add_task("Scanning sessions", total=len(jsonls), info="",
+                                            completed=_already)
+                t_index = progress.add_task("Building vectors",  total=None,        info="", visible=False)
+                t_graph = progress.add_task("Building graph",    total=None,        info="", visible=False)
+
+                _scan_start = [None]
+
+                def _eta_str(done, total, start):
+                    if start is None or done < 1:
+                        return "calculating..."
+                    rate = done / (time.time() - start)
+                    if rate <= 0:
+                        return "calculating..."
+                    secs = (total - done) / rate
+                    if secs < 60:
+                        return f"~{secs:.0f}s left"
+                    elif secs < 3600:
+                        return f"~{secs/60:.0f}m left"
+                    else:
+                        return f"~{secs/3600:.1f}h left"
+
+                def _progress(i, total, sessions, chunks, elapsed):
+                    if _scan_start[0] is None:
+                        _scan_start[0] = time.time()
+                    eta = _eta_str(_already + i, len(jsonls), _scan_start[0]) if i >= 5 else "calculating..."
+                    progress.update(t_read, completed=_already + i,
+                                    info=f"{_already + i:,} / {len(jsonls):,} sessions   {eta}")
+                    _phase["sessions"] = sessions
+                    _phase["chunks"]   = chunks
+
+                def _phase2(sessions, chunks, elapsed):
+                    progress.update(t_read, completed=len(jsonls),
+                                    info=f"{len(jsonls):,} sessions scanned")
+                    _phase["sessions"] = sessions
+                    _phase["chunks"]   = chunks
+
+                    progress.update(t_index, visible=True,
+                                    completed=_already_embedded, total=_existing_chunks,
+                                    info=f"{_already_embedded:,} / {_existing_chunks:,} chunks   calculating...")
+
+                _embed_start = [None]
+
+                def _embed_progress(done, total):
+                    if _embed_start[0] is None and done > 0:
+                        _embed_start[0] = time.time()
+                    abs_done  = _already_embedded + done
+                    abs_total = _already_embedded + total
+                    if _embed_start[0] and (time.time() - _embed_start[0]) >= 15:
+                        eta = _eta_str(done, total, _embed_start[0])
+                    else:
+                        eta = "calculating..."
+                    progress.update(t_index, completed=abs_done, total=abs_total,
+                                    info=f"{abs_done:,} / {abs_total:,} chunks   {eta}")
+
+                buf2 = io.StringIO()
+                with contextlib.redirect_stderr(buf2):
+                    try:
+                        stats = initial_backfill(conn, progress_cb=_progress, phase2_cb=_phase2,
+                                                 quiet_embed=True, embed_progress_cb=_embed_progress,
+                                                 embedder_ref=_nomic_embedder,
+                                                 skip_embed=not _model_ok)
+                    except Exception as e:
+                        console.print(f"  [yellow]Backfill error: {e}[/yellow]")
+                        _warnings.append(f"Backfill: {e}")
+                        stats = {'sessions': _phase.get('sessions', 0),
+                                 'chunks': _phase.get('chunks', 0),
+                                 'elapsed': 0, 'embed_ok': False}
+
+                if not stats.get('embed_ok', True):
+                    _warnings.append("Embedding incomplete — vec_ops disabled until re-embedded")
+                    progress.update(t_index, completed=stats['chunks'], total=stats['chunks'],
+                                    info=f"{stats['chunks']:,} chunks (embedding skipped)")
+                else:
+                    progress.update(t_index, completed=stats['chunks'], total=stats['chunks'],
+                                    info=f"{stats['chunks']:,} chunks embedded")
+
+                # Graph + enrichment (spinner, fully silent)
+                progress.update(t_graph, visible=True, info="analyzing")
+                def _graph_cb(label):
+                    progress.update(t_graph, info=label)
+                try:
+                    n_clusters, _enrich_failures = _run_enrichment_quiet(conn, progress_cb=_graph_cb)
+                except Exception as e:
+                    console.print(f"  [yellow]Enrichment error: {e}[/yellow]")
+                    _warnings.append(f"Enrichment: {e}")
+                    n_clusters, _enrich_failures = 0, []
+                cluster_info = f"{n_clusters} topic clusters found" if n_clusters else "done"
+                progress.update(t_graph, total=1, completed=1, info=cluster_info)
+
+            console.print()
+            console.print(
+                f"  [bold]{stats['sessions']:,} sessions[/bold] · "
+                f"[bold]{stats['chunks']:,} chunks[/bold]"
+                + (f" · [bold]{n_clusters}[/bold] topic clusters" if n_clusters else "")
+            )
+            if _enrich_failures:
+                for _f in _enrich_failures:
+                    _warnings.append(f"Enrichment: {_f} skipped")
+            console.print()
+            try:
+                from flex.core import log_op
+                log_op(conn, 'init_complete', 'claude_code', rows_affected=stats['chunks'])
+            except Exception as e:
+                print(f"[init] log_op: {e}", file=sys.stderr)
+
+            try:
+                from tzlocal import get_localzone
+                _tz = str(get_localzone())
+            except Exception:
+                import datetime as _dt
+                _tz = _dt.datetime.now().astimezone().tzname() or 'UTC'
+            conn.execute("INSERT OR REPLACE INTO _meta(key, value) VALUES ('timezone', ?)", [_tz])
+            conn.commit()
+        finally:
+            conn.close()
 
     # 5. Services
-    services_ok = _install_systemd() or _install_launchd()
-    if services_ok:
-        console.print("  [dim]worker[/dim]             [green]running[/green]")
-        console.print("  [dim]MCP[/dim]                [green]running[/green]")
+    _install_systemd() or _install_launchd()
+    time.sleep(1)  # give service manager a moment
+    worker_ok, mcp_ok = _verify_services()
+    if not worker_ok or not mcp_ok:
+        _start_services_direct()
+        time.sleep(1)
+        worker_ok, mcp_ok = _verify_services()
+    _status = lambda ok: "[green]running[/green]" if ok else "[red]failed[/red]"
+    console.print(f"  worker             {_status(worker_ok)}")
+    console.print(f"  MCP                {_status(mcp_ok)}")
 
     # 6. Claude Code wiring — streamable HTTP to localhost:7134
     _patch_claude_json()
@@ -829,32 +885,32 @@ def cmd_init(args):
 
     # Final box
     panel_content = Text()
-    panel_content.append("Flex is ready.\n\n", style="bold magenta")
-    panel_content.append("Claude Code            ", style="white")
+    panel_content.append("Flex is ready.\n\n", style="cyan")
+    panel_content.append("Claude Code            ")
     panel_content.append("MCP server installed\n", style="green")
     panel_content.append("restart or open a new session to connect\n\n", style="dim")
-    panel_content.append("MCP Server Endpoint    ", style="white")
+    panel_content.append("MCP Server Endpoint    ")
     panel_content.append("http://localhost:7134/mcp\n", style="green")
     panel_content.append("use with claude.ai, Cursor, or any MCP client", style="dim")
-    console.print(Panel(panel_content, padding=(1, 2)))
+    console.print(Panel(panel_content, padding=(1, 2), highlight=False))
     console.print()
-    console.print("  Ask:")
-    console.print('    [cyan]"Use flex: What did we accomplish today?"[/cyan]')
-    console.print('    [cyan]"Use flex: What\'s the lineage of this file?"[/cyan]')
+    console.print("  Ask:", highlight=False)
+    console.print('    "Use flex: What did we accomplish today?"', highlight=False)
+    console.print('    "Use flex: What\'s the lineage of this file?"', highlight=False)
     console.print()
-    console.print("  Agent:")
-    console.print('    [cyan]"Use flx-trace: What projects am I working on?"[/cyan]')
+    console.print("  Agent:", highlight=False)
+    console.print('    "Use flx-trace: What projects am I working on?"', highlight=False)
     console.print("    [dim]Spawns a dedicated retrieval sub-agent for deeper searches.[/dim]")
     console.print()
-    console.print("  Slash commands:")
-    console.print("    [cyan]/flex:local[/cyan] [dim]— search with the current agent[/dim]")
-    console.print("    [cyan]/flex:agent[/cyan] [dim]— delegate to flx-trace[/dim]")
+    console.print("  Slash commands:", highlight=False)
+    console.print("    /flex:local — search with the current agent", highlight=False)
+    console.print("    /flex:agent — delegate to flx-trace", highlight=False)
     console.print()
-    console.print("  Control depth by ending your slash command with:")
-    console.print("    [dim]go           quick[/dim]")
-    console.print("    [dim]goo          moderate[/dim]")
-    console.print("    [dim]gooo         deep[/dim]")
-    console.print("    [dim]goooooooo    exhaustive[/dim]")
+    console.print("  Control depth by ending your slash command with:", highlight=False)
+    console.print("    go           quick", highlight=False)
+    console.print("    goo          moderate", highlight=False)
+    console.print("    gooo         deep", highlight=False)
+    console.print("    goooooooo    exhaustive", highlight=False)
     console.print()
 
     # Exit code: 0 = full success, 1 = partial completion
@@ -1047,6 +1103,32 @@ _ENRICHMENT_STUBS = {
 
 
 
+def _check_fts(conn, cell_name: str):
+    """Check FTS5 consistency for a cell connection."""
+    chunks_count = conn.execute("SELECT COUNT(*) FROM _raw_chunks").fetchone()[0]
+    # chunks_fts
+    try:
+        fts_count = conn.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0]
+        if fts_count != chunks_count:
+            print(f"    chunks_fts drift ({fts_count} vs {chunks_count}) — rebuilding")
+            conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
+            conn.commit()
+        else:
+            print(f"    chunks_fts ok ({fts_count} rows)")
+    except Exception:
+        print(f"    chunks_fts not present (skip)")
+    # content_fts
+    try:
+        content_count = conn.execute("SELECT COUNT(*) FROM _raw_content").fetchone()[0]
+        content_fts_count = conn.execute("SELECT COUNT(*) FROM content_fts").fetchone()[0]
+        if content_fts_count != content_count:
+            print(f"    content_fts drift ({content_fts_count} vs {content_count}) — rebuilding")
+            conn.execute("INSERT INTO content_fts(content_fts) VALUES('rebuild')")
+            conn.commit()
+    except Exception:
+        pass  # content_fts may not exist (docpac cells)
+
+
 def cmd_sync(args):
     """Bring all three layers (code, data, services) into parity."""
     import sqlite3
@@ -1067,134 +1149,71 @@ def cmd_sync(args):
     print()
 
     # ---- Phase 1: Presets ----
-    print("[1/4] Presets")
+    print("[1/5] Presets")
     for cell in cells:
         name = cell['name']
         if target and name != target:
-            continue
-        install_presets_cell(name)
-
-    # ---- Phase 1.5: Enrichment stubs ----
-    for cell in cells:
-        name = cell['name']
-        if target and name != target:
-            continue
-        cell_type = cell.get('cell_type')
-        stubs = _ENRICHMENT_STUBS.get(cell_type, [])
-        if not stubs:
-            continue
-        db_path = resolve_cell(name)
-        if not db_path or not db_path.exists():
             continue
         try:
-            conn = sqlite3.connect(str(db_path), timeout=30)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=30000")
-            for ddl in stubs:
-                conn.execute(ddl)
-            conn.commit()
-            conn.close()
+            install_presets_cell(name)
         except Exception as e:
-            print(f"  {name}: STUB FAILED ({e})")
+            print(f"  {name}: FAILED ({e})")
 
-    # ---- Phase 2: Curated views ----
+    # ---- Phase 2: Cell sync (stubs + curated views + auto views + FTS5) ----
     print()
-    print("[2/4] Curated views")
+    print("[2/5] Cell sync")
     for cell in cells:
         name = cell['name']
         if target and name != target:
-            continue
-        view_dir = _find_view_dir(name, cell.get('cell_type'))
-        if not view_dir:
-            print(f"  {name}: SKIP (no curated views)")
             continue
         db_path = resolve_cell(name)
         if not db_path or not db_path.exists():
             print(f"  {name}: SKIP (not found)")
             continue
+        conn = None
         try:
             conn = sqlite3.connect(str(db_path), timeout=30)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=30000")
-            install_views(conn, view_dir)
-            # Count installed views
+
+            # Stubs
+            cell_type = cell.get('cell_type')
+            for ddl in _ENRICHMENT_STUBS.get(cell_type, []):
+                conn.execute(ddl)
+            conn.commit()
+
+            # Curated views
+            view_dir = _find_view_dir(name, cell_type)
+            if view_dir:
+                install_views(conn, view_dir)
+
+            # Auto views
+            regenerate_views(conn)
+            conn.commit()
+
+            # FTS5 consistency
+            _check_fts(conn, name)
+
+            # Summary
             try:
                 views = [r[0] for r in conn.execute(
                     "SELECT name FROM _views ORDER BY name"
                 ).fetchall()]
-                print(f"  {name}: {len(views)} views [{', '.join(views)}]")
+                print(f"  {name}: ok ({len(views)} views [{', '.join(views)}])")
             except Exception:
-                print(f"  {name}: views installed")
-            conn.close()
-        except sqlite3.OperationalError as e:
-            print(f"  {name}: LOCKED ({e})")
-
-    # ---- Phase 3: Auto-generated views ----
-    print()
-    print("[3/4] Auto-generated views (regenerate)")
-    for cell in cells:
-        name = cell['name']
-        if target and name != target:
-            continue
-        db_path = resolve_cell(name)
-        if not db_path or not db_path.exists():
-            continue
-        try:
-            conn = sqlite3.connect(str(db_path), timeout=30)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=30000")
-            regenerate_views(conn)
-            conn.commit()
-            conn.close()
-            print(f"  {name}: ok")
-        except sqlite3.OperationalError as e:
-            print(f"  {name}: LOCKED ({e})")
-
-    # ---- Phase 3.5: FTS5 consistency ----
-    print()
-    print("[3.5/4] FTS5 consistency")
-    for cell in cells:
-        name = cell['name']
-        if target and name != target:
-            continue
-        db_path = resolve_cell(name)
-        if not db_path or not db_path.exists():
-            continue
-        try:
-            conn = sqlite3.connect(str(db_path), timeout=30)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=30000")
-            chunks_count = conn.execute("SELECT COUNT(*) FROM _raw_chunks").fetchone()[0]
-            # chunks_fts
-            try:
-                fts_count = conn.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0]
-                if fts_count != chunks_count:
-                    print(f"  {name}: chunks_fts drift ({fts_count} vs {chunks_count}) — rebuilding")
-                    conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
-                    conn.commit()
-                    print(f"  {name}: chunks_fts rebuilt")
-                else:
-                    print(f"  {name}: chunks_fts ok ({fts_count} rows)")
-            except Exception:
-                print(f"  {name}: chunks_fts not present (skip)")
-            # content_fts
-            try:
-                content_count = conn.execute("SELECT COUNT(*) FROM _raw_content").fetchone()[0]
-                content_fts_count = conn.execute("SELECT COUNT(*) FROM content_fts").fetchone()[0]
-                if content_fts_count != content_count:
-                    print(f"  {name}: content_fts drift ({content_fts_count} vs {content_count}) — rebuilding")
-                    conn.execute("INSERT INTO content_fts(content_fts) VALUES('rebuild')")
-                    conn.commit()
-                    print(f"  {name}: content_fts rebuilt")
-            except Exception:
-                pass  # content_fts may not exist (docpac cells)
-            conn.close()
+                print(f"  {name}: ok")
         except Exception as e:
-            print(f"  {name}: FTS check failed ({e})")
+            print(f"  {name}: FAILED ({e})")
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
-    # ---- Phase 4: Services ----
+    # ---- Phase 3: Services ----
     print()
-    print("[4/4] Services")
+    print("[3/5] Services")
 
     # Install service units if missing (recovery from partial init)
     if sys.platform == "linux":
@@ -1229,34 +1248,53 @@ def cmd_sync(args):
             except Exception as e:
                 print(f"  launchd install FAILED: {e}")
         else:
+            # Kill any PID-managed processes before launchd takes over
+            _kill_pid_services()
+            uid = os.getuid()
             for label in ["dev.getflex.worker", "dev.getflex.mcp"]:
                 try:
                     subprocess.run(
                         ["launchctl", "kickstart", "-k",
-                         f"gui/{os.getuid()}/{label}"],
+                         f"user/{uid}/{label}"],
                         capture_output=True, timeout=10,
                     )
                     print(f"  {label}: restarted")
                 except Exception as e:
                     print(f"  {label}: FAILED ({e})")
 
-    # Install MCP wiring if missing (recovery from partial init)
+    # Verify services actually started (all platforms)
+    time.sleep(1)
+    worker_ok, mcp_ok = _verify_services()
+    if not worker_ok or not mcp_ok:
+        _start_services_direct()
+        time.sleep(1)
+        worker_ok, mcp_ok = _verify_services()
+    if not worker_ok:
+        print("  worker: FAILED (could not start)")
+    if not mcp_ok:
+        print("  MCP: FAILED (could not start)")
+
+    # ---- Phase 4: MCP wiring ----
+    print()
+    print("[4/5] MCP wiring")
     try:
         if CLAUDE_JSON.exists():
             _cfg = json.loads(CLAUDE_JSON.read_text())
             if "flex" not in _cfg.get("mcpServers", {}):
-                print("  MCP wiring: adding (missing from init)")
+                print("  adding (missing from init)")
                 _patch_claude_json()
+            else:
+                print("  ok")
         else:
-            print("  MCP wiring: creating ~/.claude.json")
+            print("  creating ~/.claude.json")
             _patch_claude_json()
     except Exception as e:
-        print(f"  MCP wiring: FAILED ({e})")
+        print(f"  FAILED ({e})")
 
-    # ---- Optional: Full enrichment rebuild ----
+    # ---- Phase 5: Optional enrichment rebuild ----
     if args.full:
         print()
-        print("[5/4] Enrichment rebuild (claude_code)")
+        print("[5/5] Enrichment rebuild (claude_code)")
         try:
             t0 = time.time()
             result = subprocess.run(
@@ -1403,14 +1441,18 @@ def main():
     sync_p.add_argument("--full", action="store_true", help="Also rebuild enrichments (~2min)")
 
     args = parser.parse_args()
-    if args.command == "init":
-        cmd_init(args)
-    elif args.command == "search":
-        cmd_search(args)
-    elif args.command == "sync":
-        cmd_sync(args)
-    else:
-        parser.print_help()
+    try:
+        if args.command == "init":
+            cmd_init(args)
+        elif args.command == "search":
+            cmd_search(args)
+        elif args.command == "sync":
+            cmd_sync(args)
+        else:
+            parser.print_help()
+    except KeyboardInterrupt:
+        print("\n  Interrupted. Run flex init again to resume.")
+        sys.exit(130)
 
 
 if __name__ == "__main__":

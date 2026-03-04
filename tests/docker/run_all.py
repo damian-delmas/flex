@@ -18,6 +18,8 @@ Environment:
 import argparse
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -44,6 +46,7 @@ SUITES = {
         "image": "flex-test-e2e",
         "timeout": 300,
         "needs_rw_model": True,   # must corrupt model — no ro mount
+        "network": "none",        # block downloads so corrupt model stays corrupt
     },
     "install": {
         "dockerfile": "Dockerfile.install",
@@ -63,6 +66,13 @@ SUITES = {
         "dockerfile": "Dockerfile.upgrade",
         "runner": "/run_upgrade.py",
         "image": "flex-test-upgrade",
+        "timeout": 300,
+        "needs_rw_model": False,
+    },
+    "mcp-claude": {
+        "dockerfile": "Dockerfile.e2e",
+        "runner": "/run_mcp_claude.py",
+        "image": "flex-test-e2e",
         "timeout": 300,
         "needs_rw_model": False,
     },
@@ -127,7 +137,7 @@ def _build_image(dockerfile: str, image: str) -> tuple[bool, str]:
     return r.returncode == 0, r.stderr[-500:] if r.returncode != 0 else ""
 
 
-def _run_suite(name: str, suite: dict) -> dict:
+def _run_suite(name: str, suite: dict, *, record: bool = False) -> dict:
     """Run a test suite in Docker. Returns result dict."""
     t0 = time.time()
 
@@ -139,13 +149,29 @@ def _run_suite(name: str, suite: dict) -> dict:
 
     runner_parts = suite["runner"].split()
     cmd_prefix = suite.get("cmd_prefix", ["python3"])
-    cmd = [
+    network_args = ["--network", suite["network"]] if "network" in suite else []
+    tty_args = ["-t"] if record else []
+    docker_cmd = [
         "docker", "run", "--rm",
+        *tty_args,
+        *network_args,
         *model_args,
         "-v", f"{suite_dir}:/tmp:rw",
         suite["image"],
         *cmd_prefix, *runner_parts,
     ]
+
+    # Wrap with asciinema if recording
+    cast_path = None
+    if record and shutil.which("asciinema"):
+        cast_path = suite_dir / f"{name}.cast"
+        cmd = [
+            "asciinema", "rec", "--overwrite",
+            "-c", shlex.join(docker_cmd),
+            str(cast_path),
+        ]
+    else:
+        cmd = docker_cmd
 
     r = subprocess.run(
         cmd,
@@ -163,12 +189,15 @@ def _run_suite(name: str, suite: dict) -> dict:
         except Exception:
             pass
 
-    return {
+    result = {
         "name": name,
         "exit_code": r.returncode,
         "elapsed_s": round(elapsed, 1),
         "json": suite_json,
     }
+    if cast_path and cast_path.exists():
+        result["cast"] = str(cast_path)
+    return result
 
 
 def main():
@@ -183,6 +212,8 @@ def main():
                         help="Run independent suites concurrently")
     parser.add_argument("--no-build", action="store_true",
                         help="Skip Docker build (use existing images)")
+    parser.add_argument("--record", action="store_true",
+                        help="Record each suite with asciinema (.cast alongside JSON)")
     args = parser.parse_args()
 
     # Determine suites
@@ -230,25 +261,31 @@ def main():
     results = []
     t_all = time.time()
 
+    if args.record and not shutil.which("asciinema"):
+        print("  [warn] --record requested but asciinema not found. Recording disabled.")
+        args.record = False
+
     if args.parallel and len(runnable) > 1:
         with ThreadPoolExecutor(max_workers=3) as pool:
             futures = {
-                pool.submit(_run_suite, name, SUITES[name]): name
+                pool.submit(_run_suite, name, SUITES[name], record=args.record): name
                 for name in runnable
             }
             for future in as_completed(futures):
                 r = future.result()
                 status = "\033[32mPASS\033[0m" if r["exit_code"] == 0 else "\033[31mFAIL\033[0m"
-                print(f"\n  [{status}] {r['name']} ({r['elapsed_s']}s)")
+                cast_note = f"  cast: {r['cast']}" if r.get("cast") else ""
+                print(f"\n  [{status}] {r['name']} ({r['elapsed_s']}s){cast_note}")
                 results.append(r)
     else:
         for name in runnable:
             print(f"{'='*60}")
             print(f"  Suite: {name}")
             print(f"{'='*60}")
-            r = _run_suite(name, SUITES[name])
+            r = _run_suite(name, SUITES[name], record=args.record)
             status = "\033[32mPASS\033[0m" if r["exit_code"] == 0 else "\033[31mFAIL\033[0m"
-            print(f"\n  [{status}] {name} ({r['elapsed_s']}s)\n")
+            cast_note = f"  cast: {r['cast']}" if r.get("cast") else ""
+            print(f"\n  [{status}] {name} ({r['elapsed_s']}s){cast_note}\n")
             results.append(r)
 
     total_elapsed = time.time() - t_all
@@ -293,6 +330,12 @@ def main():
     print(f"  {suite_summary}")
     print(f"  {total_pass} passed, {total_fail} failed ({total_elapsed:.1f}s)")
     print(f"  Report: {report_path}")
+
+    casts = [r["cast"] for r in results if r.get("cast")]
+    if casts:
+        print(f"  Recordings: {len(casts)} .cast files in {RESULTS_DIR}/")
+        for c in casts:
+            print(f"    asciinema play {c}")
 
     if total_fail > 0:
         print("\n\033[31m  OVERALL: FAIL\033[0m")

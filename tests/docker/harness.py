@@ -41,6 +41,7 @@ class SuiteResult:
     failed: int = 0
     skipped: int = 0
     checks: list = field(default_factory=list)
+    artifacts: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -51,6 +52,7 @@ class SuiteResult:
             "failed": self.failed,
             "skipped": self.skipped,
             "checks": [asdict(c) for c in self.checks],
+            "artifacts": self.artifacts,
         }
 
 
@@ -89,6 +91,18 @@ class Harness:
             self.result.failed += 1
             msg = f"{name}" + (f": {detail}" if detail else "")
             print(f"  {FAIL} {msg}")
+
+    def artifact(self, name: str, text: str, max_display: int = 200):
+        """Record captured output for agent audit. Prints bordered + stores in JSON."""
+        self.result.artifacts[name] = text
+        lines = text.splitlines()
+        display = lines[:max_display]
+        truncated = f" (showing {max_display}/{len(lines)} lines)" if len(lines) > max_display else ""
+        print()
+        print(f"--- {name}{truncated} ---")
+        print("\n".join(display))
+        print(f"--- /{name} ---")
+        print()
 
     def skip(self, name: str, reason: str = ""):
         """Record a skipped check."""

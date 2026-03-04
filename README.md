@@ -1,10 +1,10 @@
 # flex
 
-AI was trained on SQL. It doesn't need another retrieval API.
+AI was trained on SQL — it doesn't need another retrieval API.
 
-Every `memory.search()` call is a dumbed-down SELECT. Every `memory.add()` is a dumbed-down INSERT. Abstractions exist to make things easier for humans. Your agent isn't human.
+flex compiles AI agent conversations and knowledge bases into SQLite. Each knowledge base is a self-describing cell — chunks, embeddings, graph intelligence, and extensible functionality.
 
-Flex gives your agent the schema and gets out of the way. Your agent reads what exists and composes with what's available.
+Instead of encoding retrieval intelligence into the pipeline — re-rankers, learned scoring, custom APIs — flex exposes the schema and lets the agent compose its own queries over a rich data surface.
 
 ```bash
 curl -sSL https://getflex.dev/install.sh | bash
@@ -20,7 +20,7 @@ python -m flex init                       # if GNU flex shadows the binary
 
 ---
 
-## Ecosystem
+## ecosystem
 
 Unify your knowledge. Each domain has its own cell. The schema is the protocol — ATTACH any two cells and JOIN them directly.
 
@@ -44,9 +44,9 @@ LIMIT 10
 
 ---
 
-## The Pipeline
+## the pipeline
 
-Vector databases abstract your embeddings away. Flex keeps embeddings as numpy arrays you can modulate — diverse, unlike, trajectory, contrastive, temporal decay — operations on the embedding space itself.
+Flex keeps embeddings as numpy arrays you can modulate — diverse, unlike, trajectory, contrastive, temporal decay — operations on the embedding space itself.
 
 The retrieval engine is published independently as [flexvec](https://github.com/damian-delmas/flexvec) for use in any SQLite database.
 
@@ -58,7 +58,7 @@ SQL pre-filter  →  NumPy vector operations  →  SQL compose
 
 **SQL pre-filter.** Any SQL whose first column returns chunk IDs. `WHERE type = 'user_prompt'`. `WHERE session_id LIKE 'abc%'`. `JOIN _edges_file_identity ON file_uuid = ?`. Every table in the database is pre-filter vocabulary. If your WHERE returns 12,000 chunks, NumPy operates on 12,000 vectors — not the full corpus.
 
-**NumPy vector operations.** Cosine similarity across the candidate set. Modulation tokens reshape the landscape before selection. `unlike:oauth` penalizes similarity to a concept in embedding space — not a metadata filter, a vector operation. `diverse` runs MMR. `recent:7` applies temporal decay.
+**NumPy vector operations.** Cosine similarity across the candidate set. Modulation tokens reshape the landscape before selection. `unlike:oauth` penalizes similarity to a concept in embedding space. `diverse` runs MMR. `recent:7` applies temporal decay.
 
 **SQL compose.** Full SQL on 500 candidates. Hub boost. Community filter. JOINs against edge tables. Graph arithmetic. Add a column to your chunks — sentiment, classification, anything — and compose it into queries immediately. For cells with curated views, add the column to the view `.sql` file and run `flex sync`. For auto-generated views, it appears automatically.
 
@@ -77,7 +77,7 @@ LIMIT 10
 
 ## @orient
 
-The database describes itself. Run `@orient` and the agent gets the schema, graph topology, communities, hubs, and every available preset in one call. No SKILL.md. No verbose MCP instructions. The agent reads what exists and knows what to ask.
+The database describes itself. Run `@orient` and the agent gets the schema, graph topology, communities, hubs, and every available preset in one call. The agent reads what exists and knows what to ask.
 
 ```
 shape:        148K chunks · 3,337 sources
@@ -94,9 +94,9 @@ presets:      @digest @story @genealogy @file @sprints @bridges ...
 
 ---
 
-## Modulation Tokens
+## modulation tokens
 
-| token | operation |
+| token | operion |
 |---|---|
 | `diverse` | MMR — spread across subtopics |
 | `recent:N` | temporal decay — N-day half-life |
@@ -106,7 +106,7 @@ presets:      @digest @story @genealogy @file @sprints @bridges ...
 
 They compose freely. `diverse unlike:oauth recent:7` — three operations on the embedding space, one query. The embeddings aren't static. They're modulated per question.
 
-## Structure Tokens
+## structure tokens
 
 Run after selection on the 500 candidates. Add columns that SQL compose can use.
 
@@ -121,11 +121,11 @@ GROUP BY _community
 
 ---
 
-## Modules
+## modules
 
 A module is tables. Install by creating them with convention prefixes. Uninstall by dropping them. The system discovers what exists.
 
-### Source Modules
+### source modules
 
 Compile raw artifacts into chunks. One adapter per format.
 
@@ -156,7 +156,7 @@ Everything else is additive. Add `_types_message` for classification. Add `_edge
 
 </details>
 
-### Extension Modules
+### extension modules
 
 Attach intelligence to existing chunks with `CREATE TABLE`. SOMA is the native extension — stable identity for files, repos, content, and URLs across renames, moves, and deleted worktrees.
 
@@ -172,7 +172,7 @@ The view generator discovers it. For tables with a PK on `chunk_id`, auto-genera
 
 ---
 
-## Presets
+## presets
 
 Capture any query as a preset. Ship with your module. Discoverable via `@orient`.
 
@@ -210,7 +210,7 @@ Graph intelligence — centrality, hub status, community membership — lives in
 
 ---
 
-## Local-First
+## local-first
 
 Own your data.
 

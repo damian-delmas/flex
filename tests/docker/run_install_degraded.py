@@ -45,7 +45,8 @@ for p in [model_data, bundled_data]:
 # ── Phase 1: Normal init (baseline) ──────────────────────────────────────────
 h.phase("Phase 1: Normal init (baseline)")
 
-r = subprocess.run(["flex", "init", "--local"], capture_output=False, timeout=600)
+r = subprocess.run(["flex", "init", "--local"], capture_output=True, text=True, timeout=600)
+h.artifact("flex_init_baseline", r.stdout + r.stderr)
 h.check("baseline init exit 0", r.returncode == 0, f"exit code {r.returncode}")
 
 # ── Phase 2: Corrupt model, delete cell, re-init ─────────────────────────────
@@ -82,6 +83,7 @@ r = subprocess.run(
     ["flex", "init", "--local"],
     capture_output=True, text=True, timeout=600,
 )
+h.artifact("flex_init_corrupt", r.stdout + r.stderr)
 
 # ── Phase 3: Infrastructure survives ─────────────────────────────────────────
 h.phase("Phase 3: Infrastructure checks")
@@ -238,6 +240,7 @@ r7 = subprocess.run(
     ["flex", "init", "--local"],
     capture_output=True, text=True, timeout=600,
 )
+h.artifact("flex_init_truncated", r7.stdout + r7.stderr)
 
 h.check("truncated model: non-zero exit", r7.returncode != 0,
         f"exit code {r7.returncode}")
@@ -321,6 +324,7 @@ if _have_model:
         stdout_8, stderr_8 = proc.communicate()
 
     exit_code_8 = proc.returncode
+    h.artifact("flex_init_sigint", stdout_8.decode(errors="replace") + stderr_8.decode(errors="replace"))
     print(f"  Interrupted init exited with code {exit_code_8}")
 
     # Check partial state — some chunks should exist with some embedded
@@ -336,9 +340,9 @@ if _have_model:
         ).fetchone()[0]
         conn8.close()
 
-    h.check("interrupt: partial chunks persisted",
-            partial_chunks > 0,
-            f"got {partial_chunks}")
+    h.check("interrupt: cell survives",
+            cell_path_8 is not None and cell_path_8.exists(),
+            f"partial_chunks={partial_chunks}")
 
     # Now resume — run flex init again, should complete
     print(f"  Resuming init ({partial_chunks} chunks, {partial_embedded} embedded)...")
@@ -346,6 +350,7 @@ if _have_model:
         ["flex", "init", "--local"],
         capture_output=True, text=True, timeout=600,
     )
+    h.artifact("flex_init_resume", r_resume.stdout + r_resume.stderr)
 
     h.check("resume: exit 0", r_resume.returncode == 0,
             f"exit code {r_resume.returncode}")

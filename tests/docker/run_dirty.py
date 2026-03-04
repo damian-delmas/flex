@@ -83,7 +83,8 @@ def scenario_devtools():
     h.phase("flex init")
 
     r = subprocess.run(["flex", "init", "--local"],
-                       capture_output=False, timeout=600)
+                       capture_output=True, text=True, timeout=600)
+    h.artifact("flex_init", r.stdout + r.stderr)
     h.check("flex init --local exit 0", r.returncode == 0,
             f"exit code {r.returncode}")
     h.check("~/.flex/ created", FLEX_HOME.exists())
@@ -131,7 +132,8 @@ def scenario_conda():
     h.phase("flex init")
 
     r = subprocess.run(["flex", "init", "--local"],
-                       capture_output=False, timeout=600)
+                       capture_output=True, text=True, timeout=600)
+    h.artifact("flex_init", r.stdout + r.stderr)
     h.check("flex init --local exit 0", r.returncode == 0,
             f"exit code {r.returncode}")
 
@@ -178,7 +180,8 @@ def scenario_upgrade():
     h.phase("flex init after upgrade")
 
     r = subprocess.run(["flex", "init", "--local"],
-                       capture_output=False, timeout=600)
+                       capture_output=True, text=True, timeout=600)
+    h.artifact("flex_init", r.stdout + r.stderr)
     h.check("flex init --local exit 0", r.returncode == 0,
             f"exit code {r.returncode}")
     h.check("~/.flex/ exists", FLEX_HOME.exists())
@@ -250,11 +253,10 @@ def scenario_minimal():
     h.phase("flex init with missing deps")
 
     r = _run(["flex", "init", "--local"])
+    output = (r.stdout or "") + (r.stderr or "")
+    h.artifact("flex_init", output)
     h.check("flex init exits cleanly", r.returncode == 0,
             f"exit code {r.returncode}")
-
-    # Check that output mentions missing deps by name
-    output = (r.stdout or "") + (r.stderr or "")
     output_lower = output.lower()
     mentions_git = "git" in output_lower
     mentions_jq = "jq" in output_lower

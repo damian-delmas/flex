@@ -43,7 +43,8 @@ h.check("old version importable", r_ver.returncode == 0,
 # ── Phase 2: flex init with old version ───────────────────────────────────────
 h.phase("Phase 2: flex init (old version)")
 
-r = subprocess.run(["flex", "init", "--local"], capture_output=False, timeout=600)
+r = subprocess.run(["flex", "init", "--local"], capture_output=True, text=True, timeout=600)
+h.artifact("flex_init_old", r.stdout + r.stderr)
 h.check("old init exit 0", r.returncode == 0, f"exit code {r.returncode}")
 
 # Snapshot old state
@@ -111,6 +112,7 @@ if cell_path and cell_path.exists():
 h.phase("Phase 5: flex sync after upgrade")
 
 r = subprocess.run(["flex", "sync"], capture_output=True, text=True, timeout=120)
+h.artifact("flex_sync", r.stdout + r.stderr)
 h.check("sync exit 0", r.returncode == 0, r.stderr[:200])
 
 if cell_path and cell_path.exists():

@@ -979,8 +979,8 @@ def startup_backfill(conn: sqlite3.Connection, commit_every: int = 50):
                         print(f"[worker] Backfill progress: {backfilled} chunks",
                               file=sys.stderr)
                         sessions_since_commit = 0
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[worker] backfill skip {jsonl.name}: {e}", file=sys.stderr)
 
     if sessions_since_commit > 0:
         conn.commit()
