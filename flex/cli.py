@@ -354,7 +354,10 @@ def _verify_services() -> tuple:
 
 
 def _start_services_direct():
-    """Start worker + MCP as background processes. Last resort fallback."""
+    """Start worker + MCP as background processes. Last resort fallback.
+    Skipped on Windows — stdio MCP transport handles it per-session."""
+    if sys.platform == "win32":
+        return
     python = sys.executable
     log_dir = FLEX_HOME / "logs"
     log_dir.mkdir(exist_ok=True)
@@ -385,6 +388,8 @@ def _start_services_direct():
 
 def _kill_pid_services():
     """Kill any directly-started services by PID file. Ensures clean handoff to service manager."""
+    if sys.platform == "win32":
+        return
     import signal
     for pid_name in ["worker.pid", "mcp.pid"]:
         pid_file = FLEX_HOME / pid_name
@@ -891,17 +896,18 @@ def cmd_init(args):
         finally:
             conn.close()
 
-    # 5. Services
-    _install_systemd() or _install_launchd()
-    time.sleep(1)  # give service manager a moment
-    worker_ok, mcp_ok = _verify_services()
-    if not worker_ok or not mcp_ok:
-        _start_services_direct()
-        time.sleep(1)
+    # 5. Services (skip on Windows — stdio MCP transport handles it per-session)
+    if sys.platform != "win32":
+        _install_systemd() or _install_launchd()
+        time.sleep(1)  # give service manager a moment
         worker_ok, mcp_ok = _verify_services()
-    _status = lambda ok: "[green]running[/green]" if ok else "[red]failed[/red]"
-    console.print(f"  worker             {_status(worker_ok)}")
-    console.print(f"  MCP                {_status(mcp_ok)}")
+        if not worker_ok or not mcp_ok:
+            _start_services_direct()
+            time.sleep(1)
+            worker_ok, mcp_ok = _verify_services()
+        _status = lambda ok: "[green]running[/green]" if ok else "[red]failed[/red]"
+        console.print(f"  worker             {_status(worker_ok)}")
+        console.print(f"  MCP                {_status(mcp_ok)}")
 
     # 6. Claude Code wiring — streamable HTTP to localhost:7134
     _patch_claude_json()
