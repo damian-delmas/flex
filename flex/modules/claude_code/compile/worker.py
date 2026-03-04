@@ -954,31 +954,30 @@ def process_queue(conn: sqlite3.Connection) -> dict:
 
 
 def startup_backfill(conn: sqlite3.Connection, commit_every: int = 50):
-    """Backfill sessions missed during pipeline outage.
+    """Sync any sessions on disk that aren't in the cell.
 
-    Commits every `commit_every` sessions to keep WAL bounded.
-    Resumable: on restart, last_indexed advances past committed sessions.
+    Uses existence check (not mtime) so nothing slips through.
+    Idempotent — sync_session_messages uses INSERT OR IGNORE.
     """
     print("[worker] Running startup backfill...", file=sys.stderr)
-    last_indexed = conn.execute(
-        "SELECT COALESCE(MAX(end_time), 0) FROM _raw_sources"
-    ).fetchone()[0]
+    already = {r[0] for r in conn.execute("SELECT source_id FROM _raw_sources")}
 
     backfilled = 0
     sessions_since_commit = 0
     for jsonl in CLAUDE_PROJECTS.rglob("*.jsonl"):
+        if jsonl.stem in already:
+            continue
         try:
-            if jsonl.stat().st_mtime > last_indexed:
-                session_id = jsonl.stem
-                count = sync_session_messages(session_id, conn)
-                if count > 0:
-                    backfilled += count
-                    sessions_since_commit += 1
-                    if sessions_since_commit >= commit_every:
-                        conn.commit()
-                        print(f"[worker] Backfill progress: {backfilled} chunks",
-                              file=sys.stderr)
-                        sessions_since_commit = 0
+            count = sync_session_messages(jsonl.stem, conn)
+            if count > 0:
+                backfilled += count
+                _update_warmup(conn, jsonl.stem)
+                sessions_since_commit += 1
+                if sessions_since_commit >= commit_every:
+                    conn.commit()
+                    print(f"[worker] Backfill progress: {backfilled} chunks",
+                          file=sys.stderr)
+                    sessions_since_commit = 0
         except Exception as e:
             print(f"[worker] backfill skip {jsonl.name}: {e}", file=sys.stderr)
 
@@ -1560,11 +1559,12 @@ def daemon_loop(interval=2):
 
     print("  Docpac: incremental indexing enabled", file=sys.stderr)
 
-    BACKFILL_INTERVAL = 24 * 3600   # 24 hours — expensive JSONL scan
+    BACKFILL_INTERVAL = 30          # 30s — existence check, not mtime, so it's cheap
     ENRICHMENT_INTERVAL = 30 * 60   # 30 minutes — graph, fingerprints, repo_project
     GRAPH_STALENESS_THRESHOLD = 50  # sessions since last graph build
 
     last_backfill = time.time()
+    last_soma_heal = time.time()
     last_enrichment = 0  # run enrichment immediately after first startup
 
     while True:
@@ -1597,16 +1597,22 @@ def daemon_loop(interval=2):
             except Exception as e:
                 print(f"[docpac] Error: {e}", file=sys.stderr)
 
-        # Periodic backfill + heal — catch anything hooks missed (24h cycle)
+        # Periodic scan — catch any unindexed sessions (30s cycle)
         if time.time() - last_backfill > BACKFILL_INTERVAL:
             try:
-                print("[worker] Periodic backfill (24h cycle)...", file=sys.stderr)
                 startup_backfill(conn)
-                if soma_heal:
-                    soma_heal(conn)
                 last_backfill = time.time()
             except Exception as e:
                 print(f"[worker] Backfill error: {e}", file=sys.stderr)
+
+        # SOMA identity heal (24h cycle)
+        if soma_heal and time.time() - last_soma_heal > 24 * 3600:
+            try:
+                soma_heal(conn)
+                last_soma_heal = time.time()
+            except Exception as e:
+                print(f"[worker] SOMA heal error: {e}", file=sys.stderr)
+                last_soma_heal = time.time()
 
         # Enrichment cycle — full heal pass (30min)
         if time.time() - last_enrichment > ENRICHMENT_INTERVAL:

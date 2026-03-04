@@ -96,7 +96,7 @@ presets:      @digest @story @genealogy @file @sprints @bridges ...
 
 ## modulation tokens
 
-| token | operion |
+| token | operation |
 |---|---|
 | `diverse` | MMR — spread across subtopics |
 | `recent:N` | temporal decay — N-day half-life |
