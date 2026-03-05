@@ -614,32 +614,32 @@ else:
     h.phase("Claude Code MCP integration (SKIPPED)")
     h.skip("claude MCP checks", "no credentials or claude binary")
 
-# ── Background Indexer Queue Drain ────────────────────────────────────────────
-h.phase("Background Indexer Queue Drain")
+# ── Background Indexer Size-Based Scan ────────────────────────────────────────
+h.phase("Background Indexer Size-Based Scan")
 
-queue_db = os.path.expanduser("~/.flex/queue.db")
-conn_q = sqlite3.connect(queue_db)
-conn_q.execute(
-    "CREATE TABLE IF NOT EXISTS claude_code_pending "
-    "(session_id TEXT NOT NULL, ts INTEGER NOT NULL, payload TEXT NOT NULL)"
-)
-# Use a session_id from the seed data
-fake_event = json.dumps({
-    "tool": "Read",
-    "file": "/test/file.py",
-    "session": "00000001-0000-0000-0000-000000000001",
-    "msg": 999,
-    "cwd": "/tmp",
-    "ts": int(time.time()),
-})
-conn_q.execute(
-    "INSERT INTO claude_code_pending VALUES (?, ?, ?)",
-    ("00000001-0000-0000-0000-000000000001", int(time.time()), fake_event),
-)
-conn_q.commit()
-conn_q.close()
+# Get current chunk count before we append to a JSONL
+cell_path_str = _query("SELECT path FROM cells LIMIT 1", registry=True)
+cell_path_bg = cell_path_str.strip() if cell_path_str else None
+pre_count = 0
+if cell_path_bg:
+    c = sqlite3.connect(cell_path_bg)
+    pre_count = c.execute("SELECT COUNT(*) FROM _raw_chunks").fetchone()[0]
+    c.close()
 
-# Start MCP server in background (stdio mode)
+# Append a new line to a seed session JSONL to simulate file growth
+import glob as _glob
+session_jsonls = _glob.glob(os.path.expanduser("~/.claude/projects/**/*.jsonl"), recursive=True)
+if session_jsonls:
+    target_jsonl = session_jsonls[0]
+    new_entry = json.dumps({
+        "type": "human",
+        "message": {"role": "user", "content": "background indexer scan test"},
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+    })
+    with open(target_jsonl, "a") as f:
+        f.write(new_entry + "\n")
+
+# Start MCP server in background (stdio mode — runs scan_sessions)
 mcp_proc = subprocess.Popen(
     [sys.executable, "-m", "flex.mcp_server"],
     stdin=subprocess.PIPE,
@@ -647,20 +647,21 @@ mcp_proc = subprocess.Popen(
     stderr=subprocess.PIPE,
 )
 
-# Poll for queue drain (up to 10s)
-drained = False
-remaining = -1
+# Poll for new chunk to appear (up to 10s)
+indexed = False
 for _ in range(20):
     time.sleep(0.5)
-    c = sqlite3.connect(queue_db)
-    remaining = c.execute("SELECT COUNT(*) FROM claude_code_pending").fetchone()[0]
-    c.close()
-    if remaining == 0:
-        drained = True
-        break
+    if cell_path_bg:
+        c = sqlite3.connect(cell_path_bg)
+        post_count = c.execute("SELECT COUNT(*) FROM _raw_chunks").fetchone()[0]
+        c.close()
+        if post_count > pre_count:
+            indexed = True
+            break
 
-h.check("bg-indexer-queue-drain", drained,
-        f"Background indexer drained queue within 10s (remaining: {remaining})")
+h.check("bg-indexer-scan", indexed or not session_jsonls,
+        f"Background indexer detected file growth within 10s "
+        f"(chunks: {pre_count} -> {post_count if cell_path_bg else '?'})")
 
 mcp_proc.terminate()
 try:

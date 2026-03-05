@@ -80,6 +80,8 @@ def _auto_detect(path_str: str) -> tuple[str | None, str | None]:
                 cell_type = 'claude-code'
             elif '_types_docpac' in tables:
                 cell_type = 'docpac'
+            elif '_types_reddit' in tables:
+                cell_type = 'reddit'
     except Exception:
         pass
     return cell_type, description

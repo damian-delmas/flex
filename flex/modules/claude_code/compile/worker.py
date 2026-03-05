@@ -7,10 +7,9 @@ Writes to chunk-atom schema:
   _edges_file_identity, _edges_repo_identity, _edges_url_identity,
   _edges_delegations, _edges_soft_ops
 
-Queue: SQLite (~/.flex/queue.db) table claude_code_pending
 Cell: resolved via flex.registry
 
-Tier 0 (every 2s): Queue → chunk-atom tables + embeddings
+Tier 0 (every 2s): stat() scan → sync changed JONLs → embed
 """
 
 import hashlib
@@ -914,80 +913,62 @@ def sync_session_messages(session_id: str, conn: sqlite3.Connection,
     return inserted
 
 
-def process_queue(conn: sqlite3.Connection) -> dict:
-    """Process queue: read session_ids, sync each from JSONL."""
-    qconn = sqlite3.connect(str(QUEUE_DB), timeout=5)
-    qconn.execute("PRAGMA journal_mode=WAL")
+def scan_sessions(conn: sqlite3.Connection, size_cache: dict) -> dict:
+    """Scan all JONLs by file size, sync only those that grew.
 
-    rows = qconn.execute(
-        "SELECT session_id FROM claude_code_pending ORDER BY ts LIMIT 100"
-    ).fetchall()
+    Replaces both process_queue() and startup_backfill(). No hooks, no queue,
+    no existence check. Pure stat()-based polling — the Filebeat pattern.
 
-    if not rows:
-        qconn.close()
-        return {'processed': 0, 'embedded': 0}
+    Args:
+        conn: Open cell connection.
+        size_cache: Mutable dict {session_id: last_synced_size}. Persisted in
+                    memory across ticks. On first call, empty dict triggers
+                    full initial scan.
 
-    embedded = 0
-    session_ids = [r[0] for r in rows]
-
-    for session_id in session_ids:
-        try:
-            embedded += sync_session_messages(session_id, conn)
-            # Reactive warmup: reclassify after every sync.
-            # Sessions grow as they run — a session classified as warmup
-            # at message 2 may have 200 messages by the next sync.
-            _update_warmup(conn, session_id)
-        except Exception as e:
-            print(f"[worker] Error syncing {session_id[:8]}: {e}", file=sys.stderr)
-
-    conn.commit()
-
-    placeholders = ','.join('?' * len(session_ids))
-    qconn.execute(
-        f"DELETE FROM claude_code_pending WHERE session_id IN ({placeholders})",
-        session_ids
-    )
-    qconn.commit()
-    qconn.close()
-
-    return {'processed': len(session_ids), 'embedded': embedded}
-
-
-def startup_backfill(conn: sqlite3.Connection, commit_every: int = 50):
-    """Sync any sessions on disk that aren't in the cell.
-
-    Uses existence check (not mtime) so nothing slips through.
-    Idempotent — sync_session_messages uses INSERT OR IGNORE.
+    Returns:
+        dict with 'synced' (sessions touched) and 'chunks' (new chunks inserted).
     """
-    print("[worker] Running startup backfill...", file=sys.stderr)
-    already = {r[0] for r in conn.execute("SELECT source_id FROM _raw_sources")}
+    synced = 0
+    chunks = 0
 
-    backfilled = 0
-    sessions_since_commit = 0
     for jsonl in CLAUDE_PROJECTS.rglob("*.jsonl"):
-        if jsonl.stem in already:
-            continue
         try:
-            count = sync_session_messages(jsonl.stem, conn)
-            if count > 0:
-                backfilled += count
-                _update_warmup(conn, jsonl.stem)
-                sessions_since_commit += 1
-                if sessions_since_commit >= commit_every:
-                    conn.commit()
-                    print(f"[worker] Backfill progress: {backfilled} chunks",
-                          file=sys.stderr)
-                    sessions_since_commit = 0
-        except Exception as e:
-            print(f"[worker] backfill skip {jsonl.name}: {e}", file=sys.stderr)
+            current_size = jsonl.stat().st_size
+        except (FileNotFoundError, OSError):
+            continue
 
-    if sessions_since_commit > 0:
+        session_id = jsonl.stem
+        last_size = size_cache.get(session_id, -1)
+
+        if current_size == last_size:
+            continue  # unchanged — skip
+
+        # New or grown file — sync it
+        try:
+            count = sync_session_messages(session_id, conn)
+            _update_warmup(conn, session_id)
+            size_cache[session_id] = current_size
+            if count > 0:
+                synced += 1
+                chunks += count
+        except Exception as e:
+            print(f"[worker] sync error {session_id[:12]}: {e}", file=sys.stderr)
+
+    if chunks > 0:
         conn.commit()
 
-    if backfilled > 0:
-        print(f"[worker] Backfilled {backfilled} chunks", file=sys.stderr)
-    else:
-        print("[worker] No backfill needed", file=sys.stderr)
+    return {'synced': synced, 'chunks': chunks}
+
+
+# Legacy compat — mcp_server._background_indexer imports this
+def process_queue(conn: sqlite3.Connection) -> dict:
+    """Legacy queue drain — delegates to scan_sessions."""
+    stats = scan_sessions(conn, _global_size_cache)
+    return {'processed': stats['synced'], 'embedded': stats['chunks']}
+
+
+# Global size cache for legacy process_queue() callers (mcp_server)
+_global_size_cache: dict = {}
 
 
 def bootstrap_claude_code_cell() -> Path:
@@ -1534,13 +1515,9 @@ def daemon_loop(interval=2):
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=30000")
 
-    # Ensure queue tables exist — hooks also create these inline, but the
-    # worker starts before any hook fires, so we must create them here.
+    # Ensure docpac queue table exists (claude_code no longer uses queue)
     qconn = sqlite3.connect(str(QUEUE_DB), timeout=5)
     qconn.execute("PRAGMA journal_mode=WAL")
-    qconn.execute("""CREATE TABLE IF NOT EXISTS claude_code_pending (
-        session_id TEXT NOT NULL, ts INTEGER NOT NULL, payload TEXT NOT NULL)""")
-    qconn.execute("CREATE INDEX IF NOT EXISTS idx_claude_code_ts ON claude_code_pending(ts)")
     qconn.execute("""CREATE TABLE IF NOT EXISTS pending (
         path TEXT PRIMARY KEY, ts INTEGER)""")
     qconn.commit()
@@ -1554,27 +1531,26 @@ def daemon_loop(interval=2):
     if soma_ensure_tables:
         soma_ensure_tables(conn)
 
-    # Startup backfill for sessions missed during outage
-    startup_backfill(conn)
-
     print("  Docpac: incremental indexing enabled", file=sys.stderr)
 
-    BACKFILL_INTERVAL = 30          # 30s — existence check, not mtime, so it's cheap
     ENRICHMENT_INTERVAL = 30 * 60   # 30 minutes — graph, fingerprints, repo_project
     GRAPH_STALENESS_THRESHOLD = 50  # sessions since last graph build
 
-    last_backfill = time.time()
     last_soma_heal = time.time()
     last_enrichment = 0  # run enrichment immediately after first startup
 
+    # Size cache — empty dict triggers full initial scan on first tick
+    size_cache: dict = {}
+
     while True:
+        # Tier 0: stat() scan — sync any JONLs that grew (replaces queue + backfill)
         try:
-            stats = process_queue(conn)
-            if stats['processed'] > 0:
-                print(f"[worker] sessions={stats['processed']} emb={stats['embedded']}",
+            stats = scan_sessions(conn, size_cache)
+            if stats['synced'] > 0:
+                print(f"[worker] synced={stats['synced']} chunks={stats['chunks']}",
                       file=sys.stderr)
         except Exception as e:
-            print(f"[worker] Error: {e}", file=sys.stderr)
+            print(f"[worker] Scan error: {e}", file=sys.stderr)
 
         # Sweep NULL embeddings every tick — catches interrupted flex init,
         # failed embeds, or any other orphaned chunks. Small batch (64) so
@@ -1597,14 +1573,6 @@ def daemon_loop(interval=2):
             except Exception as e:
                 print(f"[docpac] Error: {e}", file=sys.stderr)
 
-        # Periodic scan — catch any unindexed sessions (30s cycle)
-        if time.time() - last_backfill > BACKFILL_INTERVAL:
-            try:
-                startup_backfill(conn)
-                last_backfill = time.time()
-            except Exception as e:
-                print(f"[worker] Backfill error: {e}", file=sys.stderr)
-
         # SOMA identity heal (24h cycle)
         if soma_heal and time.time() - last_soma_heal > 24 * 3600:
             try:
@@ -1622,23 +1590,6 @@ def daemon_loop(interval=2):
             except Exception as e:
                 print(f"[worker] Enrichment error: {e}", file=sys.stderr)
                 last_enrichment = time.time()  # don't retry immediately
-
-        # Queue depth check
-        try:
-            qconn = sqlite3.connect(str(QUEUE_DB), timeout=5.0)
-            cc_depth = qconn.execute(
-                "SELECT COUNT(*) FROM claude_code_pending"
-            ).fetchone()[0]
-            dp_depth = qconn.execute(
-                "SELECT COUNT(*) FROM pending"
-            ).fetchone()[0]
-            qconn.close()
-            if cc_depth > 500:
-                print(f"[worker] WARNING: claude_code queue depth {cc_depth}", file=sys.stderr)
-            if dp_depth > 100:
-                print(f"[docpac] WARNING: docpac queue depth {dp_depth}", file=sys.stderr)
-        except Exception:
-            pass  # queue may not exist yet on first boot
 
         time.sleep(interval)
 

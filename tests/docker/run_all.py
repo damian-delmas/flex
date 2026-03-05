@@ -46,6 +46,7 @@ SUITES = {
         "image": "flex-test-e2e",
         "timeout": 300,
         "needs_rw_model": "copy",  # copy model into container (rw) so test can corrupt it
+        "network": "none",  # block re-download so corruption sticks
     },
     "install": {
         "dockerfile": "Dockerfile.install",
