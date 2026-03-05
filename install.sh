@@ -3,7 +3,7 @@
 # Usage: curl -sSL https://getflex.dev/install.sh | bash
 #
 # Options (via env vars or flags):
-#   FLEX_VERSION=0.2.1    pin a specific version
+#   FLEX_VERSION=0.4.1    pin a specific version
 #   --uninstall           remove flex completely
 #   --reinstall           wipe venv and reinstall from scratch
 #   --no-init             install only, skip flex init
@@ -66,7 +66,7 @@ main() {
                 echo "  --no-init       install only, skip flex init"
                 echo ""
                 echo "Environment:"
-                echo "  FLEX_VERSION    pin a specific version (e.g. 0.2.1)"
+                echo "  FLEX_VERSION    pin a specific version (e.g. 0.4.1)"
                 exit 0
                 ;;
             *)

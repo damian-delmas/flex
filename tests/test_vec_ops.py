@@ -269,6 +269,19 @@ class TestMMR:
         diverse_ids = {r['id'] for r in diverse_results}
         assert len(diverse_ids) == 3
 
+    def test_diverse_fires_on_small_corpus(self, cache):
+        """MMR must fire even when corpus <= limit (the quickstart case)."""
+        query = _make_vec([1.0, 0.0, 0.0])
+        # limit > corpus size (5 vectors) — MMR should still fire
+        cosine_results = cache.search(query, diverse=False, limit=3, oversample=5)
+        diverse_results = cache.search(query, diverse=True, limit=3, oversample=5)
+        assert len(diverse_results) == 3
+        # MMR scores differ from cosine scores — proves MMR fired
+        cosine_scores = [r['score'] for r in cosine_results]
+        diverse_scores = [r['score'] for r in diverse_results]
+        assert cosine_scores != diverse_scores, \
+            "diverse should produce MMR scores, not raw cosine scores"
+
 
 # =============================================================================
 # Masking

@@ -15,7 +15,7 @@ dependencies = [
     "mcp",
     "starlette",
     "uvicorn",
-    "hdbscan<0.8.41",
+    "hdbscan<0.8.41",  # 0.8.41 ships no wheels — requires gcc to compile
 ]
 
 [project.optional-dependencies]

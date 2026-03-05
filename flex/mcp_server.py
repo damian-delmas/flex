@@ -65,7 +65,7 @@ def _search_authorizer(action, arg1, arg2, db_name, trigger_name):
 # Cell Management
 # ============================================================
 
-# VectorCache state — long-lived numpy matrices, independent of connections.
+# VectorCache state — long-lived embedding matrices, independent of connections.
 # {cell_name: {'caches': {table: VectorCache}, 'config': dict, 'mtime': float}}
 _vec_state: dict = {}
 _vec_lock = threading.Lock()  # protects _vec_state writes in HTTP mode
@@ -1126,10 +1126,10 @@ def main():
 
 
 async def _background_indexer():
-    """Background task: drains queue.db and runs enrichment in stdio mode.
+    """Background task: scans for changed sessions and runs enrichment in stdio mode.
 
     Defense-in-depth. On platforms with a daemon (systemd/launchd), this
-    finds nothing to drain. On platforms without a daemon (Windows, broken
+    finds nothing new. On platforms without a daemon (Windows, broken
     installs), this is the only thing keeping the cell fresh.
     """
     from flex.registry import resolve_cell, FLEX_HOME

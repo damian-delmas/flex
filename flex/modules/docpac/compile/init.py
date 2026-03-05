@@ -502,7 +502,7 @@ def main():
              'SQL PRE-FILTER (4th arg to vec_ops): '
              'Any SQL returning chunk_ids. Restricts which chunks enter the landscape.')
     set_meta(db, 'retrieval:phase2',
-             'LANDSCAPE (numpy on filtered N): '
+             'LANDSCAPE (compiled scoring on filtered N): '
              'diverse, recent[:N], unlike:TEXT, like:id1,id2, from:TEXT to:TEXT')
     set_meta(db, 'retrieval:phase3',
              'ENRICH (query-time topology on K candidates): '

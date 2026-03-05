@@ -292,7 +292,7 @@ def score_candidates(
                     detected_communities[int(node)] = ci
 
     # 3. MMR diversity — iterative selection (returns MMR scores)
-    if diverse and len(top_indices) > limit:
+    if diverse and len(top_indices) > 1:
         mmr_results = _mmr_select(
             top_indices, similarities, active_matrix, limit, lambda_=mmr_lambda)
         results = [{'id': active_ids[idx], 'score': float(score)}

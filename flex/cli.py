@@ -946,7 +946,9 @@ def cmd_init(args):
     console.print("    goooooooo    exhaustive", highlight=False)
     console.print()
 
-    # Exit code: 0 = full success, 1 = partial completion
+    # Exit code: 0 = success (possibly with soft warnings), 1 = hard failure
+    _soft_prefixes = ("Model download:", "Embedding incomplete")
+    _hard = [w for w in _warnings if not any(w.startswith(p) for p in _soft_prefixes)]
     if _warnings:
         console.print(f"  [yellow]Completed with {len(_warnings)} warning(s):[/yellow]")
         for w in _warnings:
@@ -954,7 +956,8 @@ def cmd_init(args):
         console.print()
         console.print("  [dim]Run[/dim] [bold]flex sync[/bold] [dim]to repair, or[/dim] [bold]flex init[/bold] [dim]to retry.[/dim]")
         console.print()
-        sys.exit(1)
+        if _hard:
+            sys.exit(1)
 
 
 

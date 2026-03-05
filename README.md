@@ -46,19 +46,17 @@ LIMIT 10
 
 ## the pipeline
 
-Flex keeps embeddings as numpy arrays you can modulate — diverse, unlike, trajectory, contrastive, temporal decay — operations on the embedding space itself.
-
-The retrieval engine is published independently as [flexvec](https://github.com/damiandelmas/flexvec) for use in any SQLite database.
+Flex keeps embeddings you can modulate — diverse, unlike, trajectory, contrastive, temporal decay — operations on the embedding space itself.
 
 Every query runs three steps. The agent writes the query.
 
 ```
-SQL pre-filter  →  NumPy vector operations  →  SQL compose
+SQL pre-filter  →  Vector Operations  →  SQL compose
 ```
 
-**SQL pre-filter.** Any SQL whose first column returns chunk IDs. `WHERE type = 'user_prompt'`. `WHERE session_id LIKE 'abc%'`. `JOIN _edges_file_identity ON file_uuid = ?`. Every table in the database is pre-filter vocabulary. If your WHERE returns 12,000 chunks, NumPy operates on 12,000 vectors — not the full corpus.
+**SQL pre-filter.** Any SQL whose first column returns chunk IDs. `WHERE type = 'user_prompt'`. `WHERE session_id LIKE 'abc%'`. `JOIN _edges_file_identity ON file_uuid = ?`. Every table in the database is pre-filter vocabulary. If your WHERE returns 12,000 chunks, vector operations scores 12,000 vectors — not the full corpus.
 
-**NumPy vector operations.** Cosine similarity across the candidate set. Modulation tokens reshape the landscape before selection. `unlike:oauth` penalizes similarity to a concept in embedding space. `diverse` runs MMR. `recent:7` applies temporal decay.
+**Vector Operations.** Cosine similarity across the candidate set. Modulation tokens reshape the landscape before selection. `unlike:oauth` penalizes similarity to a concept in embedding space. `diverse` runs MMR. `recent:7` applies temporal decay.
 
 **SQL compose.** Full SQL on 500 candidates. Hub boost. Community filter. JOINs against edge tables. Graph arithmetic. Add a column to your chunks — sentiment, classification, anything — and compose it into queries immediately. For cells with curated views, add the column to the view `.sql` file and run `flex sync`. For auto-generated views, it appears automatically.
 
@@ -127,7 +125,7 @@ A module is tables. Install by creating them with convention prefixes. Uninstall
 
 Compile raw artifacts into chunks. One adapter per format.
 
-**claude_code** — the reference implementation. Indexes your full session history on first run, then stays current. Hook → queue → daemon (2s ingest). SOMA inline. Enrichment every 30 minutes.
+**claude_code** — the reference implementation. Indexes your full session history on first run, then stays current. Daemon polls every 2s via stat()-based scan. SOMA inline. Enrichment every 30 minutes.
 
 Run `@health` on your cell for current coverage. Fresh installs achieve 100% on all SOMA dimensions.
 
@@ -178,7 +176,7 @@ Capture any query as a preset. Ship with your module. Discoverable via `@orient`
 
 ```
 @orient          schema, views, presets, graph topology
-@health          pipeline freshness, queue depth, embedding coverage
+@health          pipeline freshness, embedding coverage, recent ops
 @digest          multi-day activity summary — sessions, tools, files touched
 @sprints         work periods detected by 6h gaps, with op counts
 @story           session narrative — timeline, artifacts, agents
@@ -236,6 +234,6 @@ No cloud account. No API key. No vendor. No rate limits.
 curl -sSL https://getflex.dev/install.sh | bash
 ```
 
-MIT · Python 3.12 · SQLite · ONNX · numpy · networkx
+MIT · Python 3.12 · SQLite · ONNX · networkx
 
 [getflex.dev](https://getflex.dev) · [github](https://github.com/getflex) · [x](https://x.com/damian_delmas)

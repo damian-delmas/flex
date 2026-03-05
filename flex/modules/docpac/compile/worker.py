@@ -1,8 +1,8 @@
 """
 Docpac incremental index worker — single-file upsert into chunk-atom cells.
 
-Drains the `pending` table in ~/.flex/queue.db.
-Each row is a file path written by the flex-index.sh PostToolUse hook.
+Processes pending file paths from ~/.flex/queue.db.
+Rows are written by the flex-index.sh PostToolUse hook.
 
 Pipeline per file:
   resolve_cell_for_path → parse_docpac_file → frontmatter → normalize →

@@ -2,7 +2,7 @@
 Flex Vector Operations — SQL-accessible semantic search.
 
 Bridges the scoring engine into SQLite via virtual table registration.
-The scoring engine lives in _scoring.
+The scoring engine lives in score.
 
 SQL usage:
     vec_ops('_raw_chunks', 'auth')                    -- raw cosine
@@ -19,7 +19,7 @@ import uuid
 import numpy as np
 from typing import Optional, List, Dict, Any
 
-from flex.retrieve._scoring import parse_modifiers, score_candidates, _mmr_select
+from flex.retrieve.score import parse_modifiers, score_candidates, _mmr_select
 
 
 class VectorCache:
@@ -130,7 +130,7 @@ class VectorCache:
                embed_fn=None, embed_doc_fn=None) -> List[Dict[str, Any]]:
         """Search for similar vectors with optional landscape modulations.
 
-        Delegates to the scoring engine (_scoring.score_candidates).
+        Delegates to the scoring engine (score.score_candidates).
         """
         if self.matrix is None or len(self.ids) == 0:
             return []

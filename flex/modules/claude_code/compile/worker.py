@@ -1395,7 +1395,7 @@ def _run_enrichment_cycle(conn, graph_threshold=50):
 
     print("[enrich] Starting enrichment cycle", file=sys.stderr)
 
-    # 1. Unconditional: reembed sources (~1-3s, pure numpy, no ONNX)
+    # 1. Unconditional: reembed sources (~1-3s, mean-pool aggregation, no ONNX)
     if reembed_sources:
         try:
             reembed_sources(conn)
