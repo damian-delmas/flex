@@ -90,8 +90,6 @@ hubs:         9d1e3f3d "FlexSearch SQL engine" (centrality: 0.0045)
 presets:      @digest @story @genealogy @file @sprints @bridges ...
 ```
 
-3,000 tokens. Most of it is the schema itself. That's the entire onboarding.
-
 ---
 
 ## modulation tokens
@@ -195,13 +193,13 @@ Capture any query as a preset. Ship with your module. Discoverable via `@orient`
 
 <details><summary>cell internals</summary>
 
-The prefix declares the lifecycle, the mutability, the writer. No manifest. No config. The database describes itself.
+The prefix convention declares the intended lifecycle. Not enforced — semantic contract.
 
 ```
-_raw_*      immutable     content, embeddings      written by compile
+_raw_*      write-once    content, embeddings      written by compile
 _edges_*    append-only   relationships             written by compile or modules
-_types_*    immutable     classification            written by compile
-_enrich_*   mutable       graph scores              written by manage
+_types_*    write-once    classification            written by compile
+_enrich_*   rebuildable   graph scores              written by manage
 ```
 
 Graph intelligence — centrality, hub status, community membership — lives in `_enrich_*` columns.

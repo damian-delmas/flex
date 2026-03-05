@@ -134,13 +134,18 @@ def _model_mount_args(suite: dict) -> list[str]:
 def _build_image(dockerfile: str, image: str) -> tuple[bool, str]:
     """Build Docker image. Returns (success, error_output)."""
     r = subprocess.run(
-        ["docker", "build",
+        ["docker", "build", "--progress=plain",
          "-f", str(DOCKER_DIR / dockerfile),
          "-t", image,
          str(REPO_ROOT)],
         capture_output=True, text=True, timeout=300,
     )
-    return r.returncode == 0, r.stderr[-500:] if r.returncode != 0 else ""
+    if r.returncode != 0:
+        # Show full output so apt/pip errors aren't truncated
+        combined = (r.stdout or "") + "\n" + (r.stderr or "")
+        # Find the failing step output — last 3000 chars is enough context
+        return False, combined[-3000:]
+    return True, ""
 
 
 def _run_suite(name: str, suite: dict, *, record: bool = False) -> dict:
