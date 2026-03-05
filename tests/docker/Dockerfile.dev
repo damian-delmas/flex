@@ -1,0 +1,79 @@
+# Interactive dev container — simulates a fresh WSL user.
+#
+# Build:
+#   docker build -f tests/docker/Dockerfile.dev -t flex-dev .
+#
+# Run (mount source + models + sessions + API key):
+#   docker run -it --rm \
+#     -v /home/axp/projects/flexsearch/main:/flex \
+#     -v ~/.flex/models:/root/.flex/models:ro \
+#     -v /tmp/flex-staging:/root/.claude/projects:ro \
+#     -v flex-dev-cell:/root/.flex \
+#     -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
+#     -e TZ=$(cat /etc/timezone 2>/dev/null || timedatectl show -p Timezone --value 2>/dev/null || echo UTC) \
+#     flex-dev
+#
+# Source is mounted at /flex (editable install points there) — code changes on
+# the host are live in the container immediately, no rebuild required.
+#
+# Inside the container:
+#   flex init          # indexes mock sessions, wires ~/.claude.json
+#   flex-serve         # starts worker + MCP server in background
+#   claude             # open Claude Code — flex MCP is live
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ── System deps ───────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-dev \
+    python3.12-venv \
+    python3-pip \
+    build-essential \
+    jq \
+    git \
+    curl \
+    ca-certificates \
+    sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Node.js 20 + Claude Code ──────────────────────────────────────────────────
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g @anthropic-ai/claude-code \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Install flex from source ───────────────────────────────────────────────────
+WORKDIR /flex
+COPY pyproject.toml ./
+COPY flex/ ./flex/
+
+RUN pip3 install --break-system-packages -e ".[nomic]"
+
+# ── Seed mock Claude Code sessions ────────────────────────────────────────────
+COPY tests/docker/seed_sessions.py /seed_sessions.py
+RUN python3 /seed_sessions.py
+
+# ── flex-serve helper ─────────────────────────────────────────────────────────
+# Starts worker + MCP server in background (replaces systemd in this env).
+COPY tests/docker/flex-serve.sh /usr/local/bin/flex-serve
+RUN chmod +x /usr/local/bin/flex-serve
+
+# ── MOTD ──────────────────────────────────────────────────────────────────────
+RUN echo '\n\
+\033[1mflex dev container\033[0m\n\
+\n\
+  flex init      — index sessions, wire MCP config\n\
+  flex-serve     — start worker + MCP server in background\n\
+  claude         — open Claude Code (flex MCP ready)\n\
+\n\
+  flex search "@orient"     — verify cell is queryable\n\
+  flex search "@health"     — pipeline freshness\n\
+' > /etc/motd
+
+RUN echo 'cat /etc/motd' >> /root/.bashrc
+
+WORKDIR /root
+CMD ["/bin/bash"]

@@ -1,0 +1,291 @@
+"""
+Dirty environment test runner — validates flex in hostile/unusual environments.
+
+Scenarios:
+  devtools  — GNU flex collision (/usr/bin/flex is the lexer)
+  conda     — Python path resolution inside conda env
+  upgrade   — 0.1.43 -> current upgrade path
+  minimal   — missing git/jq, expect graceful failure
+
+Usage:
+    python3 /run_dirty.py --scenario devtools
+    python3 /run_dirty.py --scenario conda
+    python3 /run_dirty.py --scenario upgrade
+    python3 /run_dirty.py --scenario minimal
+
+Exit 0 = pass, exit 1 = fail.
+"""
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+from harness import Harness
+
+FLEX_HOME = Path.home() / ".flex"
+CLAUDE_JSON = Path.home() / ".claude.json"
+
+
+def _mcp_config():
+    """Load MCP config from ~/.claude.json, return the flex server entry or None."""
+    if not CLAUDE_JSON.exists():
+        return None
+    try:
+        d = json.loads(CLAUDE_JSON.read_text())
+        return d.get("mcpServers", {}).get("flex")
+    except Exception:
+        return None
+
+
+def _run(cmd, **kwargs):
+    """Run a command and return the CompletedProcess."""
+    defaults = {"capture_output": True, "text": True, "timeout": 120}
+    defaults.update(kwargs)
+    return subprocess.run(cmd, **defaults)
+
+
+# ── Scenario: devtools ────────────────────────────────────────────────────────
+
+def scenario_devtools():
+    """GNU flex collision — /usr/bin/flex is the lexer, flex binary is getflex."""
+    h = Harness("dirty-devtools")
+
+    # ── Verify GNU flex exists and our proxy forwards to it ────────────────
+    h.phase("GNU flex collision")
+
+    h.check("/usr/bin/flex exists (GNU)",
+            os.path.isfile("/usr/bin/flex"),
+            "GNU flex not at /usr/bin/flex")
+
+    # Our flex wins PATH (pip install puts it at /usr/local/bin/flex)
+    which_flex = shutil.which("flex")
+    h.check("which flex returns our binary (not GNU)",
+            which_flex != "/usr/bin/flex",
+            f"got: {which_flex}")
+
+    # But GNU flex usage is transparently proxied
+    r = _run(["flex", "--version"])
+    h.check("flex --version proxies to GNU flex",
+            r.returncode == 0 and "flex" in (r.stdout or "").lower(),
+            f"stdout: {(r.stdout or '')[:100]}")
+
+    # ── flex CLI works (via python -m flex in Docker) ─────────────────────
+    h.phase("flex CLI")
+
+    r = _run(["flex", "--help"])
+    h.check("flex --help exit 0", r.returncode == 0,
+            r.stderr[:200] if r.stderr else "")
+
+    # ── flex init --local ─────────────────────────────────────────────────
+    h.phase("flex init")
+
+    r = subprocess.run(["flex", "init", "--local"],
+                       capture_output=True, text=True, timeout=600)
+    h.artifact("flex_init", r.stdout + r.stderr)
+    h.check("flex init --local exit 0", r.returncode == 0,
+            f"exit code {r.returncode}")
+    h.check("~/.flex/ created", FLEX_HOME.exists())
+
+    # ── flex search ───────────────────────────────────────────────────────
+    h.phase("flex search")
+
+    r = _run(["flex", "search", "SELECT COUNT(*) FROM sessions"])
+    h.check("flex search exit 0", r.returncode == 0,
+            r.stderr[:200] if r.stderr else "")
+
+    # ── MCP config: HTTP transport ────────────────────────────────────────
+    h.phase("MCP config")
+
+    h.check("~/.claude.json exists", CLAUDE_JSON.exists())
+    srv = _mcp_config()
+    h.check("flex MCP entry exists", srv is not None)
+    if srv:
+        h.check("MCP transport is HTTP",
+                srv.get("type") == "http",
+                f"got: {srv.get('type')}")
+        h.check("MCP URL has port 7134",
+                "localhost:7134" in srv.get("url", ""),
+                f"got: {srv.get('url')}")
+
+    return h
+
+
+# ── Scenario: conda ──────────────────────────────────────────────────────────
+
+def scenario_conda():
+    """Python path resolution inside conda env."""
+    h = Harness("dirty-conda")
+
+    # ── sys.executable contains conda path ────────────────────────────────
+    h.phase("Conda Python path")
+
+    exe = sys.executable
+    has_conda_path = "conda" in exe or "envs" in exe
+    h.check("sys.executable contains conda/envs",
+            has_conda_path,
+            f"sys.executable = {exe}")
+
+    # ── flex init --local ─────────────────────────────────────────────────
+    h.phase("flex init")
+
+    r = subprocess.run(["flex", "init", "--local"],
+                       capture_output=True, text=True, timeout=600)
+    h.artifact("flex_init", r.stdout + r.stderr)
+    h.check("flex init --local exit 0", r.returncode == 0,
+            f"exit code {r.returncode}")
+
+    # ── MCP config: HTTP transport ────────────────────────────────────────
+    h.phase("MCP config")
+
+    h.check("~/.claude.json exists", CLAUDE_JSON.exists())
+    srv = _mcp_config()
+    h.check("flex MCP entry exists", srv is not None)
+    if srv:
+        h.check("MCP transport is HTTP",
+                srv.get("type") == "http",
+                f"got: {srv.get('type')}")
+        h.check("MCP URL has port 7134",
+                "localhost:7134" in srv.get("url", ""),
+                f"got: {srv.get('url')}")
+
+    # ── flex search ───────────────────────────────────────────────────────
+    h.phase("flex search")
+
+    r = _run(["flex", "search", "@orient"])
+    h.check("flex search @orient exit 0", r.returncode == 0,
+            r.stderr[:200] if r.stderr else "")
+
+    # ── import flex works ────────────────────────────────────────────────
+    h.phase("Import check")
+
+    try:
+        import flex
+        h.check("import flex works", True)
+    except ImportError as e:
+        h.check("import flex works", False, str(e))
+
+    return h
+
+
+# ── Scenario: upgrade ────────────────────────────────────────────────────────
+
+def scenario_upgrade():
+    """0.1.43 -> current upgrade path."""
+    h = Harness("dirty-upgrade")
+
+    # ── flex init --local on top of any existing ~/.flex/ ────────────────
+    h.phase("flex init after upgrade")
+
+    r = subprocess.run(["flex", "init", "--local"],
+                       capture_output=True, text=True, timeout=600)
+    h.artifact("flex_init", r.stdout + r.stderr)
+    h.check("flex init --local exit 0", r.returncode == 0,
+            f"exit code {r.returncode}")
+    h.check("~/.flex/ exists", FLEX_HOME.exists())
+
+    # ── Cell data exists ─────────────────────────────────────────────────
+    h.phase("Cell data")
+
+    import flex.registry as reg
+    cell_path = reg.resolve_cell("claude_code")
+    h.check("cell registered", cell_path is not None)
+
+    if cell_path and cell_path.exists():
+        import sqlite3
+        conn = sqlite3.connect(str(cell_path))
+        n_chunks = conn.execute("SELECT COUNT(*) FROM _raw_chunks").fetchone()[0]
+        n_sessions = conn.execute("SELECT COUNT(*) FROM _raw_sources").fetchone()[0]
+        conn.close()
+
+        h.check("chunks indexed after upgrade", n_chunks > 0, f"got {n_chunks}")
+        h.check("sessions indexed after upgrade", n_sessions > 0, f"got {n_sessions}")
+
+    # ── flex search works ─────────────────────────────────────────────────
+    h.phase("flex search")
+
+    r = _run(["flex", "search", "--json",
+              "SELECT COUNT(*) as n FROM sessions"])
+    h.check("flex search exit 0", r.returncode == 0,
+            r.stderr[:200] if r.stderr else "")
+
+    # ── MCP config: HTTP transport ────────────────────────────────────────
+    h.phase("MCP config")
+
+    h.check("~/.claude.json exists", CLAUDE_JSON.exists())
+    srv = _mcp_config()
+    h.check("flex MCP entry exists", srv is not None)
+    if srv:
+        h.check("MCP transport is HTTP",
+                srv.get("type") == "http",
+                f"got: {srv.get('type')}")
+        h.check("MCP URL has port 7134",
+                "localhost:7134" in srv.get("url", ""),
+                f"got: {srv.get('url')}")
+
+    # ── flex sync ─────────────────────────────────────────────────────────
+    h.phase("flex sync")
+
+    r = _run(["flex", "sync"], timeout=60)
+    h.check("flex sync exit 0", r.returncode == 0,
+            r.stderr[:200] if r.stderr else "")
+
+    return h
+
+
+# ── Scenario: minimal ────────────────────────────────────────────────────────
+
+def scenario_minimal():
+    """No git, no jq — expect graceful failure."""
+    h = Harness("dirty-minimal")
+
+    # ── Verify git/jq are absent ─────────────────────────────────────────
+    h.phase("Missing dependencies")
+
+    h.check("git not installed", shutil.which("git") is None,
+            f"found at: {shutil.which('git')}")
+    h.check("jq not installed", shutil.which("jq") is None,
+            f"found at: {shutil.which('jq')}")
+
+    # ── flex init --local should surface missing deps clearly ──────────
+    h.phase("flex init with missing deps")
+
+    r = _run(["flex", "init", "--local"])
+    output = (r.stdout or "") + (r.stderr or "")
+    h.artifact("flex_init", output)
+    h.check("flex init exits cleanly", r.returncode == 0,
+            f"exit code {r.returncode}")
+    output_lower = output.lower()
+    mentions_git = "git" in output_lower
+    mentions_jq = "jq" in output_lower
+    h.check("output mentions git or jq",
+            mentions_git or mentions_jq,
+            f"output: {output[:500]}")
+
+    return h
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+SCENARIOS = {
+    "devtools": scenario_devtools,
+    "conda": scenario_conda,
+    "upgrade": scenario_upgrade,
+    "minimal": scenario_minimal,
+}
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Dirty environment test runner")
+    parser.add_argument("--scenario", required=True, choices=list(SCENARIOS.keys()),
+                        help="Scenario to run")
+    args = parser.parse_args()
+
+    h = SCENARIOS[args.scenario]()
+    sys.exit(h.finish())
+
+
+if __name__ == "__main__":
+    main()

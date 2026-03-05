@@ -1,0 +1,99 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  unit:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Smoke — import
+        run: python -c "import flex; print('import OK')"
+
+      - name: Smoke — CLI
+        run: flex --help
+
+      - name: Tests
+        run: |
+          pip install pytest
+          pytest tests/ -x -q -m "not pipeline" --tb=short
+
+      - name: Install smoke test (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          flex init --local
+          flex search "SELECT COUNT(*) FROM sessions"
+          python3 -c "
+          import json, pathlib, sys
+          cfg = json.loads(pathlib.Path.home().joinpath('.claude.json').read_text())
+          srv = cfg['mcpServers']['flex']
+          assert 'command' in srv or 'url' in srv, f'Expected stdio or http transport, got: {srv}'
+          print(f'MCP config OK: {\"http\" if \"url\" in srv else \"stdio\"} transport')
+          "
+
+      - name: Install smoke test (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          flex init --local
+          flex search "SELECT COUNT(*) FROM sessions"
+          python -c "import json, pathlib; cfg = json.loads(pathlib.Path.home().joinpath('.claude.json').read_text()); srv = cfg['mcpServers']['flex']; assert 'command' in srv or 'url' in srv, f'No transport in: {srv}'; print('MCP config OK')"
+
+  docker-e2e:
+    name: Docker E2E
+    runs-on: ubuntu-latest
+    needs: [unit]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Cache ONNX model
+        uses: actions/cache@v4
+        with:
+          path: ~/.flex/models
+          key: flex-model-v1
+
+      - name: Download model (if not cached)
+        run: |
+          pip install -e .
+          python -c "
+          from flex.onnx.fetch import download_model, model_ready
+          if not model_ready():
+              download_model()
+          "
+
+      - name: Run Docker E2E
+        run: python tests/docker/run_all.py --suite e2e --suite degraded
+        env:
+          FLEX_MODEL_CACHE: ~/.flex/models
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-e2e-report
+          path: /tmp/flex-test-results/
