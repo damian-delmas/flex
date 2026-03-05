@@ -112,7 +112,8 @@ DEFAULT_SUITES = ["e2e", "degraded"]
 
 
 def _model_cache() -> Path:
-    return Path(os.environ.get("FLEX_MODEL_CACHE", Path.home() / ".flex" / "models"))
+    raw = os.environ.get("FLEX_MODEL_CACHE", str(Path.home() / ".flex" / "models"))
+    return Path(os.path.expanduser(raw))
 
 
 def _model_mount_args(suite: dict) -> list[str]:
