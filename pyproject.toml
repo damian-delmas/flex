@@ -16,6 +16,7 @@ dependencies = [
     "starlette",
     "uvicorn",
     "hdbscan<0.8.41",
+    "flexscore>=0.1.1",
 ]
 
 [project.optional-dependencies]

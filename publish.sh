@@ -111,8 +111,8 @@ echo "Deploying to getflex.dev..."
 _deploy_dir=$(mktemp -d)
 cp install.sh "$_deploy_dir/install.sh"
 _website_dir="$HOME/projects/flex/website/main"
-if [[ -f "$_website_dir/getflexdotdev.html" ]]; then
-    cp "$_website_dir/getflexdotdev.html" "$_deploy_dir/index.html"
+if [[ -f "$_website_dir/getflexdotdev-claudecode.html" ]]; then
+    cp "$_website_dir/getflexdotdev-claudecode.html" "$_deploy_dir/index.html"
 fi
 if npx wrangler pages deploy "$_deploy_dir" --project-name getflex-site --branch main --commit-dirty=true 2>&1 | tail -1; then
     echo "getflex.dev deployed"
