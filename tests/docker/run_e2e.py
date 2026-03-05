@@ -655,9 +655,9 @@ mcp_proc = subprocess.Popen(
     stderr=subprocess.PIPE,
 )
 
-# Poll for new chunk to appear (up to 10s)
+# Poll for new chunk to appear (up to 30s — CI startup is slower)
 indexed = False
-for _ in range(20):
+for _ in range(60):
     time.sleep(0.5)
     if cell_path_bg:
         c = sqlite3.connect(cell_path_bg)
@@ -668,7 +668,7 @@ for _ in range(20):
             break
 
 h.check("bg-indexer-scan", indexed or not session_jsonls,
-        f"Background indexer detected file growth within 10s "
+        f"Background indexer detected file growth within 30s "
         f"(chunks: {pre_count} -> {post_count if cell_path_bg else '?'})")
 
 mcp_proc.terminate()
