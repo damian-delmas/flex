@@ -191,7 +191,7 @@ main() {
     fi
 
     # ── Install getflex ──────────────────────────────────────────
-    FLEX_VERSION="${FLEX_VERSION:-0.5.0}"
+    FLEX_VERSION="${FLEX_VERSION:-0.7.0}"
 
     # Skip if already on target version (unless --reinstall)
     local _cur_ver

@@ -119,8 +119,6 @@ SQL pre-filter  →  Vector Operations  →  SQL compose
 
 The agent writes the full query. Pre-filter narrows the corpus with SQL, vector ops scores with embeddings + modulation tokens, SQL compose joins back to views with graph intelligence.
 
-For the full architecture — pipeline internals, modulation tokens, modules, cell conventions, SOMA identity system — see [ARCHITECTURE.md](ARCHITECTURE.md).
-
 ---
 
 ## ecosystem
