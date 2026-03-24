@@ -4,6 +4,10 @@
 
 # flex
 
+[![PyPI](https://img.shields.io/pypi/v/getflex)](https://pypi.org/project/getflex/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/)
+
 AI was trained on SQL — it doesn't need another retrieval API.
 
 flex compiles your session history, memory and knowledge into SQLite. Your AI agent connects, discovers the schema, and starts querying. The fastest way to make your structured data searchable.
