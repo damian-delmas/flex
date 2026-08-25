@@ -1,0 +1,324 @@
+name: Windows Container
+
+on:
+  pull_request:
+    paths:
+      - ".dockerignore"
+      - "deploy/windows/**"
+      - "tests/docker/run_windows_container.py"
+      - "tests/test_external_runtime.py"
+      - ".github/workflows/container-publish.yml"
+      - "flex/**"
+      - "pyproject.toml"
+  push:
+    branches:
+      - "main"
+      - "windows-public-release"
+    paths:
+      - ".dockerignore"
+      - "deploy/windows/**"
+      - "tests/docker/run_windows_container.py"
+      - "tests/test_external_runtime.py"
+      - ".github/workflows/container-publish.yml"
+      - "flex/**"
+      - "pyproject.toml"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish only after attaching clean-Windows lifecycle receipts"
+        required: false
+        default: false
+        type: boolean
+      windows_receipt_url:
+        description: "Protected clean-Windows verification receipt URL"
+        required: false
+        type: string
+      windows_receipt_sha256:
+        description: "SHA-256 of the clean-Windows verification receipt"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-container-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/damiandelmas/flex
+  TEST_IMAGE: getflex-windows:test
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build exact wheel
+        id: wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade build pytest
+          rm -rf dist
+          python -m build --wheel
+          mapfile -t wheels < <(find dist -maxdepth 1 -type f -name 'getflex-*.whl' -print)
+          test "${#wheels[@]}" -eq 1
+          wheel="${wheels[0]}"
+          version=$(python - <<'PY'
+          import tomllib
+          with open('pyproject.toml', 'rb') as f:
+              print(tomllib.load(f)['project']['version'])
+          PY
+          )
+          sha=$(sha256sum "$wheel" | awk '{print $1}')
+          echo "path=$wheel" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Focused runtime-owner tests
+        run: pytest -q tests/test_external_runtime.py
+
+      - name: Build local image
+        shell: bash
+        run: |
+          docker build \
+            -f deploy/windows/Dockerfile \
+            -t "$TEST_IMAGE" \
+            --build-arg FLEX_VERSION="${{ steps.wheel.outputs.version }}" \
+            --build-arg FLEX_WHEEL_SHA256="${{ steps.wheel.outputs.sha256 }}" \
+            --build-arg FLEX_SOURCE_REVISION="$GITHUB_SHA" \
+            --build-arg FLEX_IMAGE_REVISION="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            .
+
+      - name: Provider-general container proof
+        env:
+          FLEX_TEST_JSON_DIR: ${{ runner.temp }}/flex-container-results
+        run: python tests/docker/run_windows_container.py --no-build --image "$TEST_IMAGE"
+
+      - name: Upload proof receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-container-proof-${{ github.run_id }}
+          path: ${{ runner.temp }}/flex-container-results/
+          if-no-files-found: warn
+
+  windows-render:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Render the actual PowerShell installation
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "getflex-render"
+          $source = Join-Path $root "source with spaces"
+          $install = Join-Path $root "install"
+          New-Item -ItemType Directory -Force -Path $source | Out-Null
+          Set-Content -LiteralPath (Join-Path $source "session.jsonl") -Value '{"type":"message"}'
+          $manifest = @{
+            modules = @(@{
+              module = "opencode"
+              cell = "opencode"
+              args = @("--source", "/sources/opencode/session.jsonl")
+              modulePackage = $source
+              mounts = @(@{
+                source = (Join-Path $source "session.jsonl")
+                target = "/sources/opencode/session.jsonl"
+              })
+            })
+          } | ConvertTo-Json -Depth 8
+          $manifestPath = Join-Path $root "modules.json"
+          Set-Content -LiteralPath $manifestPath -Value $manifest -Encoding UTF8
+          & ./deploy/windows/install.ps1 `
+            -InstallDir $install `
+            -Image "ghcr.io/damiandelmas/flex:test" `
+            -ModuleManifest $manifestPath `
+            -SkipModule codex,claude-code,goose `
+            -SkipMcpRegistration `
+            -NonInteractive `
+            -RenderOnly
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($file in @("compose.yaml", "compose.sources.yaml", ".env", "install-manifest.json")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $install $file))) { throw "Missing rendered $file" }
+          }
+          $rendered = Get-Content -LiteralPath (Join-Path $install "compose.sources.yaml") -Raw
+          if ($rendered -notmatch "/sources/opencode/session.jsonl") { throw "Rendered mount target missing" }
+          if ($rendered -notmatch "source with spaces") { throw "Rendered Windows source path missing" }
+          if ([regex]::Matches($rendered, "/module-packages/opencode").Count -ne 1) {
+            throw "Module package must be mounted only into the disposable initializer"
+          }
+
+          $badManifest = @{
+            modules = @(@{
+              module = "invalid"
+              mounts = @(@{
+                source = (Join-Path $source "session.jsonl")
+                target = "/root/.flex"
+              })
+            })
+          } | ConvertTo-Json -Depth 8
+          $badManifestPath = Join-Path $root "invalid-modules.json"
+          Set-Content -LiteralPath $badManifestPath -Value $badManifest -Encoding UTF8
+          $rejected = $false
+          try {
+            & ./deploy/windows/install.ps1 `
+              -InstallDir (Join-Path $root "invalid-install") `
+              -ModuleManifest $badManifestPath `
+              -SkipModule codex,claude-code,goose `
+              -NonInteractive `
+              -RenderOnly 2>$null
+          } catch {
+            $rejected = $true
+          }
+          if (-not $rejected) { throw "Reserved mount target unexpectedly succeeded" }
+
+          # Run the complete bootstrap against a fake Docker CLI so argument
+          # forwarding is verified without requiring Docker Desktop on the
+          # hosted Windows runner.
+          $fakeBin = Join-Path $root "fake-bin"
+          $dockerLog = Join-Path $root "docker-args.log"
+          New-Item -ItemType Directory -Force -Path $fakeBin | Out-Null
+          @"
+          @echo off
+          echo %*>>"$dockerLog"
+          exit /b 0
+          "@ | Set-Content -LiteralPath (Join-Path $fakeBin "docker.cmd") -Encoding ASCII
+          $oldPath = $env:PATH
+          try {
+            $env:PATH = "$fakeBin;$oldPath"
+            & ./deploy/windows/install.ps1 `
+              -InstallDir (Join-Path $root "fake-full-install") `
+              -Image "ghcr.io/damiandelmas/flex:test" `
+              -ModuleManifest $manifestPath `
+              -SkipModule codex,claude-code,goose `
+              -SkipMcpRegistration `
+              -NonInteractive
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            $env:PATH = $oldPath
+          }
+          $dockerCalls = Get-Content -LiteralPath $dockerLog -Raw
+          foreach ($expected in @(
+            "compose version",
+            "compose --project-directory",
+            "run --rm init flex init --module opencode",
+            "up -d --wait worker",
+            "exec getflex-worker flex status --all"
+          )) {
+            if ($dockerCalls -notmatch [regex]::Escape($expected)) { throw "Missing Docker call: $expected`n$dockerCalls" }
+          }
+
+      - name: Parse rendered YAML
+        shell: pwsh
+        run: |
+          python -m pip install pyyaml
+          @'
+          import os, yaml
+          root = os.path.join(os.environ['RUNNER_TEMP'], 'getflex-render', 'install')
+          parsed = {}
+          for name in ('compose.yaml', 'compose.sources.yaml'):
+              with open(os.path.join(root, name), encoding='utf-8-sig') as f:
+                  parsed[name] = yaml.safe_load(f)
+                  assert isinstance(parsed[name], dict), name
+          with open('deploy/windows/compose.yaml', encoding='utf-8') as f:
+              assert parsed['compose.yaml'] == yaml.safe_load(f), 'embedded Compose template drifted'
+          '@ | python -
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    needs: [build-test, windows-render]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: windows-container-release
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Require clean-Windows release receipt
+        shell: bash
+        env:
+          RECEIPT_URL: ${{ inputs.windows_receipt_url }}
+          RECEIPT_SHA256: ${{ inputs.windows_receipt_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$RECEIPT_URL" == https://* ]]
+          [[ "$RECEIPT_SHA256" =~ ^[0-9a-fA-F]{64}$ ]]
+          echo "Release receipt: $RECEIPT_URL"
+          echo "Receipt SHA-256: $RECEIPT_SHA256"
+
+      - name: Rebuild exact candidate
+        id: wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade build
+          rm -rf dist
+          python -m build --wheel
+          mapfile -t wheels < <(find dist -maxdepth 1 -type f -name 'getflex-*.whl' -print)
+          test "${#wheels[@]}" -eq 1
+          wheel="${wheels[0]}"
+          version=$(python - <<'PY'
+          import tomllib
+          with open('pyproject.toml', 'rb') as f:
+              print(tomllib.load(f)['project']['version'])
+          PY
+          )
+          sha=$(sha256sum "$wheel" | awk '{print $1}')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push protected release
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.wheel.outputs.version }}"
+          sha_tag="sha-${GITHUB_SHA::12}"
+          docker build \
+            -f deploy/windows/Dockerfile \
+            -t "$IMAGE:$version" \
+            -t "$IMAGE:$sha_tag" \
+            --build-arg FLEX_VERSION="$version" \
+            --build-arg FLEX_WHEEL_SHA256="${{ steps.wheel.outputs.sha256 }}" \
+            --build-arg FLEX_SOURCE_REVISION="$GITHUB_SHA" \
+            --build-arg FLEX_IMAGE_REVISION="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            .
+          docker push "$IMAGE:$version"
+          docker push "$IMAGE:$sha_tag"
+          digest=$(docker buildx imagetools inspect "$IMAGE:$version" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          test -n "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Published $IMAGE:$version@$digest"

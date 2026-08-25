@@ -4,7 +4,24 @@ Public changes to **flex** ([getflex.dev](https://getflex.dev)).
 
 ---
 
-## 0.54.1 — Unreleased
+## 0.55.0 — Unreleased
+
+### Experimental Windows container distribution
+
+- Flex now has a provider-general Docker Desktop/WSL2 distribution surface: an exact
+  released-wheel image, disposable per-module initializers, one persistent worker,
+  narrow source mounts (read-only except explicit SQLite WAL sidecar directories), a durable Flex volume, and one universal stdio MCP
+  command over the complete cell registry.
+- The PowerShell bootstrap detects known native source stores and accepts explicit
+  module/source mappings for packaged or external modules. It does not install Docker,
+  agent CLIs, or provider-specific Flex builds, and ordinary uninstall retains cells.
+- Publication remains experimental until clean-Windows live JSONL/SQLite, Docker
+  restart, reboot, upgrade, and data-retention receipts pass; native Windows Python
+  execution is still not claimed.
+
+---
+
+## 0.54.1 — August 13, 2026
 
 ### Honest full-sync outcomes
 

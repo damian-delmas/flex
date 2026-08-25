@@ -27,6 +27,23 @@ WORKER_DAEMON_ARGS = ["-m", "flex.daemon", "--no-refresh", "--no-background"]
 REFRESH_DAEMON_ARGS = ["-m", "flex.refresh", "--due"]
 
 
+def _runtime_setup_enabled() -> bool:
+    """Whether an installer should own services and MCP client wiring.
+
+    Container packaging compiles modules in disposable processes and supplies
+    one separate worker/MCP route. ``FLEX_RUNTIME_OWNER=external`` keeps every
+    module's data/compiler path intact while suppressing machine-local runtime
+    side effects. The default preserves existing native install behavior.
+    """
+    return os.environ.get("FLEX_RUNTIME_OWNER", "").strip().lower() != "external"
+
+
+def _quiesce_runtime_for_init(module_name: str | None) -> None:
+    """Stop installer-owned services only when this process owns runtime setup."""
+    if module_name and _runtime_setup_enabled():
+        _kill_pid_services()
+
+
 def _python_command(args: list[str]) -> str:
     return " ".join([sys.executable, *args])
 
@@ -929,14 +946,15 @@ def cmd_init(args):
     # they write their own no-embed cell and never touch the worker/mcp DBs. On the
     # 60s instant-regen cron, this kill flapped flex-mcp every minute (it never
     # stayed up long enough to finish warming). A regen recompiles the cell; it must
-    # not bounce the daemons.
+    # not bounce the daemons. Externally managed container initialization must not
+    # stop the persistent host-owned runtime.
     _regen_op = _module == "instant" and (
         getattr(args, "regen", None)
         or getattr(args, "path", None)
         or getattr(args, "remove", None)
     )
     if _module and not _regen_op:
-        _kill_pid_services()
+        _quiesce_runtime_for_init(_module)
 
     console.print()
 

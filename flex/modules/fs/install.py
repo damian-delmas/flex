@@ -67,13 +67,38 @@ def run(args, console) -> None:
     """Create, populate, register, and teach one mixed filesystem cell."""
     from flex.cli import (
         _install_claude_assets, _install_launchd, _install_systemd,
-        _patch_claude_json, _start_services_direct, _verify_services,
+        _patch_claude_json, _runtime_setup_enabled,
+        _start_services_direct, _verify_services,
     )
     from flex.modules.fs.compile.schema import FILESYSTEM_SCHEMA_DDL
     from flex.modules.fs.compile.worker import reconcile_cell
     from flex.registry import resolve_cell
     from flex.retrieve.embeddings import set_active_model
     from flex.sdk import create, register
+
+    def configure_runtime(cell_name: str) -> None:
+        install_mcp = not getattr(args, "no_mcp", False)
+        if not _runtime_setup_enabled():
+            console.print("  runtime             [dim]externally managed[/dim]")
+            console.print(
+                f"  Query               [bold]flex search --cell {cell_name} \"@orient\"[/bold]"
+            )
+            return
+        if install_mcp:
+            _install_claude_assets(("flex",))
+        if sys.platform != "win32":
+            _install_systemd() or _install_launchd()
+            time.sleep(1)
+            worker_ok, mcp_ok = _verify_services()
+            if not worker_ok or not mcp_ok:
+                _start_services_direct()
+        if install_mcp:
+            _patch_claude_json()
+        else:
+            console.print("  MCP                 [yellow]not configured (--no-mcp)[/yellow]")
+        console.print(
+            f"  Query               [bold]flex search --cell {cell_name} \"@orient\"[/bold]"
+        )
 
     root = _resolve_root(args)
     if getattr(args, "embed", False) and getattr(args, "no_embed", False):
@@ -148,9 +173,6 @@ def run(args, console) -> None:
         raise
     db.close()
 
-    install_mcp = not getattr(args, "no_mcp", False)
-    if install_mcp:
-        _install_claude_assets(("flex",))
     console.print(
         f"  filesystem          [green]{sources} files, {chunks} chunks[/green]"
     )
@@ -160,14 +182,4 @@ def run(args, console) -> None:
     if obsidian:
         console.print("  Obsidian            [green]enabled for Markdown files[/green]")
 
-    if sys.platform != "win32":
-        _install_systemd() or _install_launchd()
-        time.sleep(1)
-        worker_ok, mcp_ok = _verify_services()
-        if not worker_ok or not mcp_ok:
-            _start_services_direct()
-    if install_mcp:
-        _patch_claude_json()
-    else:
-        console.print("  MCP                 [yellow]not configured (--no-mcp)[/yellow]")
-    console.print(f"  Query               [bold]flex search --cell {name} \"@orient\"[/bold]")
+    configure_runtime(name)

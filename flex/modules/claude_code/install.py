@@ -46,7 +46,8 @@ def run(args, console) -> None:
     from flex.cli import (
         FLEX_HOME, _ENRICHMENT_STUBS, _find_view_dirs,
         _install_claude_assets, _install_launchd, _install_systemd,
-        _patch_claude_json, _start_services_direct, _verify_services,
+        _patch_claude_json, _runtime_setup_enabled,
+        _start_services_direct, _verify_services,
     )
 
     _warnings: list[str] = []
@@ -258,8 +259,10 @@ def run(args, console) -> None:
         finally:
             conn.close()
 
+    runtime_setup = _runtime_setup_enabled()
+
     # 5. Services
-    if sys.platform != "win32":
+    if runtime_setup and sys.platform != "win32":
         managed = _install_systemd() or _install_launchd()
         time.sleep(1)
         worker_ok, mcp_ok = _verify_services()
@@ -282,20 +285,27 @@ def run(args, console) -> None:
             _warnings.append("Service manager registration could not be verified")
         console.print(f"  worker             {_status(worker_ok)}")
         console.print(f"  MCP                {_status(mcp_ok)}")
+    elif not runtime_setup:
+        console.print("  runtime            [dim]externally managed[/dim]")
 
     # 6. Claude Code wiring
-    _patch_claude_json()
+    if runtime_setup:
+        _patch_claude_json()
     console.print()
 
     # 7. Final panel
     panel_content = Text()
     panel_content.append("Flex is ready.\n\n", style="cyan")
     panel_content.append("Claude Code            ")
-    panel_content.append("MCP server installed\n", style="green")
-    panel_content.append("restart or open a new session to connect\n\n", style="dim")
-    panel_content.append("MCP Server Endpoint    ")
-    panel_content.append("http://localhost:7134/mcp\n", style="green")
-    panel_content.append("use with claude.ai, Cursor, or any MCP client", style="dim")
+    if runtime_setup:
+        panel_content.append("MCP server installed\n", style="green")
+        panel_content.append("restart or open a new session to connect\n\n", style="dim")
+        panel_content.append("MCP Server Endpoint    ")
+        panel_content.append("http://localhost:7134/mcp\n", style="green")
+        panel_content.append("use with claude.ai, Cursor, or any MCP client", style="dim")
+    else:
+        panel_content.append("cell compiled\n", style="green")
+        panel_content.append("runtime and MCP wiring are externally managed", style="dim")
     console.print(Panel(panel_content, padding=(1, 2), highlight=False))
     console.print()
     console.print("  Ask:", highlight=False)

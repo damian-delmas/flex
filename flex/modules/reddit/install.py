@@ -157,6 +157,7 @@ def run(args, console) -> None:
         _install_launchd,
         _install_systemd,
         _patch_claude_json,
+        _runtime_setup_enabled,
         _start_services_direct,
         _verify_services,
     )
@@ -199,19 +200,22 @@ def run(args, console) -> None:
             f"[green]{stats.get('sources', 0)} threads, {stats.get('chunks', 0)} chunks[/green]"
         )
 
-    if sys.platform != "win32":
-        _install_systemd() or _install_launchd()
-        time.sleep(1)
-        worker_ok, mcp_ok = _verify_services()
-        if not worker_ok or not mcp_ok:
-            _start_services_direct()
+    runtime_setup = _runtime_setup_enabled()
+    if runtime_setup:
+        if sys.platform != "win32":
+            _install_systemd() or _install_launchd()
             time.sleep(1)
             worker_ok, mcp_ok = _verify_services()
-        status = lambda ok: "[green]running[/green]" if ok else "[red]failed[/red]"
-        console.print(f"  worker              {status(worker_ok)}")
-        console.print(f"  MCP                 {status(mcp_ok)}")
-
-    _patch_claude_json()
+            if not worker_ok or not mcp_ok:
+                _start_services_direct()
+                time.sleep(1)
+                worker_ok, mcp_ok = _verify_services()
+            status = lambda ok: "[green]running[/green]" if ok else "[red]failed[/red]"
+            console.print(f"  worker              {status(worker_ok)}")
+            console.print(f"  MCP                 {status(mcp_ok)}")
+        _patch_claude_json()
+    else:
+        console.print("  runtime              [dim]externally managed[/dim]")
     console.print()
 
     panel_content = Text()
@@ -220,8 +224,11 @@ def run(args, console) -> None:
     panel_content.append(", ".join("r/" + s for s in subreddits) + "\n", style="green")
     panel_content.append("Cell                  ", style="")
     panel_content.append(f"{cell_name}\n", style="green")
-    panel_content.append("MCP Server            ", style="")
-    panel_content.append("http://localhost:7134/mcp\n\n", style="green")
+    panel_content.append("MCP Runtime           ", style="")
+    if runtime_setup:
+        panel_content.append("http://localhost:7134/mcp\n\n", style="green")
+    else:
+        panel_content.append("externally managed\n\n", style="dim")
     panel_content.append("  flex search --cell ", style="bold")
     panel_content.append(f"{cell_name} ", style="bold green")
     panel_content.append('"@orient"\n', style="bold")
