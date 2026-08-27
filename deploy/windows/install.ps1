@@ -342,6 +342,9 @@ if (-not $SkipPull) {
     Invoke-Native -File docker -Arguments @("pull", $Image)
 }
 
+Write-Step "Quiescing the Flex worker for initialization"
+Invoke-Compose @("stop", "worker")
+
 foreach ($module in $modules) {
     Write-Step ("Initializing module " + $module.module)
     if ($module.modulePackage) {

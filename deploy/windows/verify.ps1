@@ -26,7 +26,12 @@ function Invoke-ComposeCapture([string[]]$Arguments) {
 }
 $manifestPath = Join-Path $InstallDir "install-manifest.json"
 if (-not (Test-Path -LiteralPath $manifestPath)) { throw "Missing install manifest: $manifestPath" }
-$modules = @(Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json)
+$parsedModules = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+$modules = if ($parsedModules -is [System.Array]) {
+    @($parsedModules | ForEach-Object { $_ })
+} else {
+    @($parsedModules)
+}
 
 $receipt = [ordered]@{
     timestamp = [DateTime]::UtcNow.ToString("o")
