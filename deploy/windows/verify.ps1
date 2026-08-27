@@ -86,9 +86,9 @@ foreach ($markerSpec in $ExpectedMarker) {
     $cell = $parts[0]
     $marker = $parts[1]
     $escaped = $marker.Replace("'", "''")
-    $query = "SELECT k.id, k.snippet FROM keyword('`"$escaped`"') k LIMIT 5"
+    $query = "SELECT CASE WHEN EXISTS (SELECT 1 FROM chunks WHERE instr(content, '$escaped') > 0) THEN 'FLEX_MARKER_FOUND' ELSE 'FLEX_MARKER_MISSING' END AS marker_status"
     $result = Invoke-Capture docker @("exec", "getflex-worker", "flex", "search", "--cell", $cell, $query)
-    $found = $result.Contains($marker)
+    $found = $result.Contains("FLEX_MARKER_FOUND")
     $receipt.expected_markers += [ordered]@{ cell=$cell; marker=$marker; found=$found }
     if (-not $found) { throw "Marker not found in ${cell}: $marker" }
 }
@@ -114,9 +114,9 @@ foreach ($markerSpec in $ExpectedMarker) {
     $cell = $parts[0]
     $marker = $parts[1]
     $escaped = $marker.Replace("'", "''")
-    $query = "SELECT k.id, k.snippet FROM keyword('`"$escaped`"') k LIMIT 5"
+    $query = "SELECT CASE WHEN EXISTS (SELECT 1 FROM chunks WHERE instr(content, '$escaped') > 0) THEN 'FLEX_MARKER_FOUND' ELSE 'FLEX_MARKER_MISSING' END AS marker_status"
     $result = Invoke-Capture docker @("exec", "getflex-worker", "flex", "search", "--cell", $cell, $query)
-    if (-not $result.Contains($marker)) { throw "Marker lost after compose recreation in ${cell}: $marker" }
+    if (-not $result.Contains("FLEX_MARKER_FOUND")) { throw "Marker lost after compose recreation in ${cell}: $marker" }
 }
 
 $receipt | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $ReceiptPath -Encoding UTF8

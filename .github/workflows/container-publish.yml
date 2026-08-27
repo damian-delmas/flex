@@ -230,11 +230,53 @@ jobs:
           foreach ($expected in @(
             "compose version",
             "compose --project-directory",
+            "stop worker",
             "run --rm init flex init --module opencode",
             "up -d --wait worker",
             "exec getflex-worker flex status --all"
           )) {
             if ($dockerCalls -notmatch [regex]::Escape($expected)) { throw "Missing Docker call: $expected`n$dockerCalls" }
+          }
+
+          # Verify PowerShell 5.1 expands JSON arrays and tolerates successful
+          # native commands that write diagnostics to stderr.
+          $fakeInstall = Join-Path $root "fake-full-install"
+          $parsedInstalledModules = Get-Content -LiteralPath (Join-Path $fakeInstall "install-manifest.json") -Raw | ConvertFrom-Json
+          $installedModules = if ($parsedInstalledModules -is [System.Array]) {
+            @($parsedInstalledModules | ForEach-Object { $_ })
+          } else {
+            @($parsedInstalledModules)
+          }
+          $secondModule = $installedModules[0].PSObject.Copy()
+          $secondModule.module = "opencode-secondary"
+          $secondModule.cell = "opencode_secondary"
+          @($installedModules[0], $secondModule) | ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath (Join-Path $fakeInstall "install-manifest.json") -Encoding UTF8
+          @"
+          @echo off
+          echo %*>>"$dockerLog"
+          echo %* | findstr /c:"exec -i getflex-worker python -m flex.serve" >nul
+          if not errorlevel 1 (
+            echo [flex-mcp] diagnostic 1>&2
+            echo {"jsonrpc":"2.0","id":1,"result":{}}
+            exit /b 0
+          )
+          echo ok
+          exit /b 0
+          "@ | Set-Content -LiteralPath (Join-Path $fakeBin "docker.cmd") -Encoding ASCII
+          $receipt = Join-Path $root "fake-verification.json"
+          try {
+            $env:PATH = "$fakeBin;$oldPath"
+            & ./deploy/windows/verify.ps1 -InstallDir $fakeInstall -ReceiptPath $receipt
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            $env:PATH = $oldPath
+          }
+          $verified = Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json
+          if (@($verified.modules).Count -ne 2) { throw "Verifier collapsed the module array" }
+          if (-not $verified.mcp_handshake -or -not $verified.worker_restart -or
+              -not $verified.compose_recreate -or -not $verified.volume_preserved) {
+            throw "Verifier did not complete the fake lifecycle"
           }
 
       - name: Parse rendered YAML
