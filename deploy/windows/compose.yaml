@@ -1,0 +1,33 @@
+name: getflex
+
+x-flex-common: &flex-common
+  image: ${FLEX_IMAGE:?Set FLEX_IMAGE in .env}
+  pull_policy: never
+  environment:
+    FLEX_HOME: /root/.flex
+    PYTHONUNBUFFERED: "1"
+  volumes:
+    - type: volume
+      source: getflex-data
+      target: /root/.flex
+
+services:
+  init:
+    <<: *flex-common
+    profiles: ["init"]
+    environment:
+      FLEX_HOME: /root/.flex
+      FLEX_RUNTIME_OWNER: external
+      FLEX_SKILL_MODE: none
+      PYTHONUNBUFFERED: "1"
+    restart: "no"
+
+  worker:
+    <<: *flex-common
+    container_name: getflex-worker
+    command: ["python", "-m", "flex.daemon", "--no-refresh", "--no-background"]
+    restart: unless-stopped
+
+volumes:
+  getflex-data:
+    name: getflex-data

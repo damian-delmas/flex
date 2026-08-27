@@ -22,8 +22,10 @@ required.
 
 ## quick start
 
-The installer currently supports macOS and Linux with Bash, Python 3.12+, `git`,
-`curl`, and `file`. Native Windows support is not available yet.
+The native installer currently supports macOS and Linux with Bash, Python 3.12+, `git`,
+`curl`, and `file`. Native Windows Python execution is not available. An experimental
+Windows container distribution is available from this repository and runs the complete
+released Flex wheel through Docker Desktop/WSL2.
 
 Install flex for Claude Code:
 
@@ -64,6 +66,46 @@ flex health --json
 flex search --cell claude_code "@orient"  # Claude Code
 flex search --cell codex "@orient"        # Codex CLI
 ```
+
+### Windows container preview
+
+The Windows package is provider-general: it uses one complete Flex image, initializes
+selected modules in disposable containers, persists cells in one Docker volume, and
+runs one worker. It is not a Claude- or Codex-specific build.
+
+Prerequisites: Windows 11 x64 and a running Docker Desktop WSL2 engine. From a checkout:
+
+```powershell
+.\deploy\windows\install.ps1
+```
+
+The bootstrap detects known local provider stores and accepts a JSON module manifest
+for additional packaged or external modules. It mounts only selected source paths,
+read-only by default. A narrowly scoped SQLite source directory may be writable when
+WAL/SHM sidecar mechanics require it, while Flex still opens the source database in
+read-only mode. Agent credentials and the whole user profile are never mounted.
+
+Every MCP client uses the same stdio command and sees the complete Flex registry:
+
+```text
+docker exec -i getflex-worker python -m flex.serve
+```
+
+Docker Compose owns operation and upgrade:
+
+```powershell
+docker compose -f compose.yaml -f compose.sources.yaml ps
+docker compose -f compose.yaml -f compose.sources.yaml logs -f worker
+docker pull ghcr.io/damiandelmas/flex:VERSION
+docker compose -f compose.yaml -f compose.sources.yaml up -d --wait worker
+docker compose -f compose.yaml -f compose.sources.yaml down      # retain cells
+docker compose -f compose.yaml -f compose.sources.yaml down -v   # explicit purge
+```
+
+Flex 0.55.0 ships this as an experimental beta after clean-Windows live-source,
+Docker Desktop restart, Compose recreation, MCP, and volume-retention receipts passed.
+A full Windows OS reboot and cross-version container upgrade remain required before
+stable Windows support is claimed.
 
 ### let your coding agent install it
 
