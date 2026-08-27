@@ -10,8 +10,16 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 function Invoke-Capture([string]$File, [string[]]$Arguments) {
-    $output = & $File @Arguments 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) { throw "$File failed ($LASTEXITCODE): $($Arguments -join ' ')`n$output" }
+    $previousPreference = $ErrorActionPreference
+    $exitCode = 1
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & $File @Arguments 2>&1 | Out-String
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    if ($exitCode -ne 0) { throw "$File failed (${exitCode}): $($Arguments -join ' ')`n$output" }
     return $output.Trim()
 }
 
@@ -60,8 +68,16 @@ foreach ($module in $modules) {
 }
 
 $initialize = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"getflex-windows-verify","version":"1"}}}'
-$handshake = $initialize | & docker exec -i getflex-worker python -m flex.serve 2>$null | Out-String
-if ($LASTEXITCODE -ne 0 -or $handshake -notmatch '"id"\s*:\s*1') { throw "Flex stdio MCP handshake failed: $handshake" }
+$previousPreference = $ErrorActionPreference
+$handshakeExit = 1
+try {
+    $ErrorActionPreference = "Continue"
+    $handshake = $initialize | & docker exec -i getflex-worker python -m flex.serve 2>$null | Out-String
+    $handshakeExit = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $previousPreference
+}
+if ($handshakeExit -ne 0 -or $handshake -notmatch '"id"\s*:\s*1') { throw "Flex stdio MCP handshake failed: $handshake" }
 $receipt.mcp_handshake = $true
 
 foreach ($markerSpec in $ExpectedMarker) {
