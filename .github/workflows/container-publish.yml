@@ -73,7 +73,7 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade build pytest
           rm -rf dist
-          python -m build --wheel
+          SOURCE_DATE_EPOCH=0 python -m build --wheel
           mapfile -t wheels < <(find dist -maxdepth 1 -type f -name 'getflex-*.whl' -print)
           test "${#wheels[@]}" -eq 1
           wheel="${wheels[0]}"
