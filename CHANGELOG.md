@@ -15,8 +15,9 @@ Public changes to **flex** ([getflex.dev](https://getflex.dev)).
 - The PowerShell bootstrap detects known native source stores and accepts explicit
   module/source mappings for packaged or external modules. It does not install Docker,
   agent CLIs, or provider-specific Flex builds, and ordinary uninstall retains cells.
-- Publication remains experimental until clean-Windows live JSONL/SQLite, Docker
-  restart, reboot, upgrade, and data-retention receipts pass; native Windows Python
+- The 0.55.0 beta passed clean-Windows live JSONL, Docker Desktop restart, Compose
+  recreation, MCP, and data-retention receipts. Full Windows OS reboot and
+  cross-version upgrade proof remain gates for stable support; native Windows Python
   execution is still not claimed.
 
 ---

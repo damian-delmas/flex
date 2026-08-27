@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "release": "0.55.0",
+  "distribution": "windows-container-beta",
+  "public_repository": "https://github.com/damiandelmas/flex",
+  "public_pull_request": "https://github.com/damiandelmas/flex/pull/11",
+  "candidate_commit": "1d0d192c2",
+  "tested_runtime": {
+    "image": "getflex-windows-public:test",
+    "image_id": "sha256:e44286fd2db26f68fbe30fb8da5a0c82cd6512b602298d2c431366bb69852858",
+    "image_version": "0.55.0",
+    "image_source_revision": "9ab58704444ee2fb801981ba653cb9a1414ec4af",
+    "wheel_sha256": "d8c6ad0e022a748bcd7214200ce61d7d7389f328069418020374542e0521dd12",
+    "source_equivalence": "Commits after the tested image revision changed only the Windows verifier and CI workflow; packaged Flex sources, pyproject.toml, and the Dockerfile were unchanged."
+  },
+  "host": {
+    "windows": "Microsoft Windows NT 10.0.26200.0",
+    "docker_engine": "29.4.1",
+    "docker_compose": "5.1.3"
+  },
+  "native_source_lifecycle": {
+    "timestamp": "2026-08-27T04:28:10.4460030Z",
+    "modules": [
+      {
+        "module": "codex",
+        "cell": "codex",
+        "orient_ok": true,
+        "limitations": [
+          "state_5.sqlite is not auto-mounted; configure a safe snapshot for full title/sidecar metadata"
+        ]
+      },
+      {
+        "module": "claude-code",
+        "cell": "claude_code",
+        "orient_ok": true,
+        "limitations": []
+      }
+    ],
+    "initial_native_jsonl_marker_found": true,
+    "live_native_jsonl_marker_found": true,
+    "mcp_handshake": true,
+    "worker_restart": true,
+    "compose_recreate": true,
+    "volume_preserved": true
+  },
+  "docker_desktop_restart": {
+    "timestamp": "2026-08-27T15:24:48.4187847Z",
+    "performed": true,
+    "volume_before": "getflex-data:2026-08-27T03:49:29Z",
+    "volume_after": "getflex-data:2026-08-27T03:49:29Z",
+    "volume_preserved": true,
+    "image_before": "sha256:e44286fd2db26f68fbe30fb8da5a0c82cd6512b602298d2c431366bb69852858",
+    "image_after": "sha256:e44286fd2db26f68fbe30fb8da5a0c82cd6512b602298d2c431366bb69852858",
+    "cells": [
+      {
+        "cell": "codex",
+        "orient_ok": true,
+        "chunks": 4753
+      },
+      {
+        "cell": "claude_code",
+        "orient_ok": true,
+        "chunks": 4
+      }
+    ],
+    "mcp_handshake": true
+  },
+  "automated_validation": {
+    "runtime_owner_tests": 8,
+    "provider_general_container_checks": 39,
+    "windows_powershell_render": true,
+    "public_ci_run": "https://github.com/damiandelmas/flex/actions/runs/33039657363"
+  },
+  "remaining_before_stable_support": [
+    "Full Windows OS reboot proof",
+    "Cross-version Windows container upgrade proof"
+  ]
+}

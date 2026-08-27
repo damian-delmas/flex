@@ -102,8 +102,10 @@ docker compose -f compose.yaml -f compose.sources.yaml down      # retain cells
 docker compose -f compose.yaml -f compose.sources.yaml down -v   # explicit purge
 ```
 
-This remains an experimental distribution until the clean-Windows live-source,
-Docker-restart, reboot, upgrade, and retention receipts pass.
+Flex 0.55.0 ships this as an experimental beta after clean-Windows live-source,
+Docker Desktop restart, Compose recreation, MCP, and volume-retention receipts passed.
+A full Windows OS reboot and cross-version container upgrade remain required before
+stable Windows support is claimed.
 
 ### let your coding agent install it
 
