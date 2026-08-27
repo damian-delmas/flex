@@ -11,7 +11,7 @@
     "image_version": "0.55.0",
     "image_source_revision": "9ab58704444ee2fb801981ba653cb9a1414ec4af",
     "wheel_sha256": "d8c6ad0e022a748bcd7214200ce61d7d7389f328069418020374542e0521dd12",
-    "source_equivalence": "Commits after the tested image revision changed only the Windows verifier and CI workflow; packaged Flex sources, pyproject.toml, and the Dockerfile were unchanged."
+    "source_equivalence": "Commits after the tested image revision changed only the Windows verifier, CI workflow, release documentation, and this receipt; packaged Flex sources, pyproject.toml, and the Dockerfile were unchanged."
   },
   "host": {
     "windows": "Microsoft Windows NT 10.0.26200.0",
